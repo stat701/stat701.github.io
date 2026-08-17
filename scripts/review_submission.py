@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Run an advisory AI review for one title-and-abstract pull request.
 
-This script is intended for a manually dispatched GitHub Actions workflow.  It
-reads pull-request data through the GitHub API, fetches the exact file blobs at
-the immutable base and head commit SHAs, applies the repository's deterministic
-metadata validator, and only then sends the immutable year in program and the
-normalized title and abstract to the OpenAI Responses API.
+This script is intended for a trusted default-branch GitHub Actions workflow.
+It reads pull-request data through the GitHub API, fetches the exact file blobs
+at the immutable base and head commit SHAs, applies the repository's
+deterministic metadata validator, and only then sends the immutable year in
+program and the normalized title and abstract to the OpenAI Responses API.
 
 No pull-request code is checked out or executed.  The model's result is
 advisory: this script only creates or updates a pull-request comment and never
@@ -49,6 +49,10 @@ GITHUB_API_ROOT = "https://api.github.com"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 DEFAULT_MODEL = "gpt-5.6-terra"
 COMMENT_MARKER = "<!-- stat701-ai-review -->"
+COMPLETION_MARKER_RE = re.compile(
+    r"(?m)^<!-- stat701-ai-review-complete:"
+    r"(?P<blob_sha>[0-9a-f]{40}|[0-9a-f]{64}) -->$"
+)
 
 REPOSITORY_RE = re.compile(
     r"\A[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,98}[A-Za-z0-9])?/"
@@ -160,6 +164,14 @@ class GitHubAPIError(ReviewError):
 
 class EligibilityError(ReviewError):
     """The selected pull request is not an eligible metadata submission."""
+
+
+class NotMetadataSubmission(EligibilityError):
+    """The pull request is a PDF or ordinary maintainer change, not metadata."""
+
+
+class AlreadyReviewed(ReviewError):
+    """This exact metadata blob already received a successful AI review."""
 
 
 class OpenAIReviewError(ReviewError):
@@ -320,7 +332,7 @@ def fetch_pull_request(
     if payload.get("state") != "open":
         raise EligibilityError("Only an open pull request can be reviewed.")
     if payload.get("changed_files") != 1:
-        raise EligibilityError(
+        raise NotMetadataSubmission(
             "The AI reviewer only accepts a pull request that changes exactly one file."
         )
 
@@ -370,7 +382,7 @@ def fetch_submission_file(
         endpoint=f"/{repo_path}/pulls/{pr_number}/files?per_page=100&page=1",
     )
     if not isinstance(payload, list) or len(payload) != 1:
-        raise EligibilityError(
+        raise NotMetadataSubmission(
             "The AI reviewer requires exactly one changed metadata file."
         )
     changed_file = _require_mapping(payload[0], "changed-file")
@@ -382,7 +394,7 @@ def fetch_submission_file(
         raise GitHubAPIError("GitHub returned an invalid changed-file path.")
     match = TALK_PATH_RE.fullmatch(path)
     if match is None:
-        raise EligibilityError(
+        raise NotMetadataSubmission(
             "The AI reviewer only reviews _talks/fall-2026-XX.md submissions."
         )
     if status != "modified":
@@ -713,7 +725,10 @@ def _escape_comment_text(value: str, *, maximum: int = 700) -> str:
 
 
 def format_review_comment(
-    review: ReviewResult, *, reviewed_head_sha: str | None = None
+    review: ReviewResult,
+    *,
+    reviewed_head_sha: str | None = None,
+    completed_blob_sha: str | None = None,
 ) -> str:
     labels = {
         "looks_good": "✅ Looks good for title and abstract",
@@ -740,6 +755,12 @@ def format_review_comment(
     if review.status == "human_review" or review.confidence == "low":
         lines.extend(
             ["", "**Escalation:** A maintainer should review this submission manually."]
+        )
+    if completed_blob_sha is not None:
+        if not SHA_RE.fullmatch(completed_blob_sha):
+            raise ValueError("The completed blob SHA is invalid.")
+        lines.insert(
+            1, f"<!-- stat701-ai-review-complete:{completed_blob_sha} -->"
         )
     if reviewed_head_sha is not None:
         if not SHA_RE.fullmatch(reviewed_head_sha):
@@ -776,13 +797,30 @@ def _bot_marker_comments(comments: Sequence[Any]) -> list[int]:
     return sorted(set(matching))
 
 
-def upsert_review_comment(
-    *, token: str, repository: str, pr_number: int, body: str
-) -> None:
-    """Create one bot marker comment, or update it and remove bot duplicates."""
+def _bot_completed_blob_shas(comments: Sequence[Any]) -> set[str]:
+    """Read completion markers only from comments owned by GitHub Actions."""
 
+    completed: set[str] = set()
+    for comment in comments:
+        if not isinstance(comment, Mapping):
+            continue
+        user = comment.get("user")
+        if not isinstance(user, Mapping) or user.get("login") != "github-actions[bot]":
+            continue
+        body = comment.get("body")
+        if not isinstance(body, str):
+            continue
+        completed.update(
+            match.group("blob_sha") for match in COMPLETION_MARKER_RE.finditer(body)
+        )
+    return completed
+
+
+def _list_issue_comments(
+    *, token: str, repository: str, pr_number: int
+) -> list[Any]:
     repo_path = _repository_api_path(repository)
-    marker_comment_ids: list[int] = []
+    collected: list[Any] = []
     for page in range(1, 21):
         comments = github_request(
             token=token,
@@ -793,13 +831,55 @@ def upsert_review_comment(
         )
         if not isinstance(comments, list):
             raise GitHubAPIError("GitHub returned invalid pull-request comments.")
-        marker_comment_ids.extend(_bot_marker_comments(comments))
+        collected.extend(comments)
         if len(comments) < 100:
-            break
-    else:
-        raise GitHubAPIError("The pull request has too many comments to update safely.")
+            return collected
+    raise GitHubAPIError("The pull request has too many comments to update safely.")
 
-    marker_comment_ids = sorted(set(marker_comment_ids))
+
+def review_already_completed(
+    *, token: str, repository: str, pr_number: int, blob_sha: str
+) -> bool:
+    if not SHA_RE.fullmatch(blob_sha):
+        raise GitHubAPIError("Refusing an invalid reviewed blob SHA.")
+    comments = _list_issue_comments(
+        token=token, repository=repository, pr_number=pr_number
+    )
+    return blob_sha in _bot_completed_blob_shas(comments)
+
+
+def _preserve_completion_markers(body: str, blob_shas: set[str]) -> str:
+    """Keep a hidden per-blob review history while showing one current review."""
+
+    lines = [
+        line
+        for line in body.splitlines()
+        if COMPLETION_MARKER_RE.fullmatch(line) is None
+    ]
+    if not lines or lines[0] != COMMENT_MARKER:
+        raise GitHubAPIError("Refusing to post a malformed AI review comment.")
+    markers = [
+        f"<!-- stat701-ai-review-complete:{blob_sha} -->"
+        for blob_sha in sorted(blob_shas)
+    ]
+    return "\n".join((lines[0], *markers, *lines[1:]))
+
+
+def upsert_review_comment(
+    *, token: str, repository: str, pr_number: int, body: str
+) -> None:
+    """Create one bot marker comment, or update it and remove bot duplicates."""
+
+    repo_path = _repository_api_path(repository)
+    comments = _list_issue_comments(
+        token=token, repository=repository, pr_number=pr_number
+    )
+    marker_comment_ids = _bot_marker_comments(comments)
+    completed_blob_shas = _bot_completed_blob_shas(comments)
+    completed_blob_shas.update(
+        match.group("blob_sha") for match in COMPLETION_MARKER_RE.finditer(body)
+    )
+    body = _preserve_completion_markers(body, completed_blob_shas)
     if not marker_comment_ids:
         github_request(
             token=token,
@@ -845,8 +925,9 @@ def run_review(
     pr_number: int,
     default_branch: str,
     model: str,
-) -> tuple[ReviewResult, bool, str]:
-    """Return ``(result, ai_succeeded, reviewed_head_sha)`` for one PR."""
+    expected_head_sha: str | None = None,
+) -> tuple[ReviewResult, bool, str, str]:
+    """Return result, success flag, head SHA, and reviewed blob SHA for one PR."""
 
     initial_pr = fetch_pull_request(
         token=token,
@@ -854,6 +935,13 @@ def run_review(
         pr_number=pr_number,
         default_branch=default_branch,
     )
+    if expected_head_sha is not None:
+        if not SHA_RE.fullmatch(expected_head_sha):
+            raise EligibilityError("The expected pull-request head SHA is invalid.")
+        if initial_pr.head_sha != expected_head_sha:
+            raise EligibilityError(
+                "The pull request changed after deterministic validation."
+            )
     submission = fetch_submission_file(
         token=token, repository=repository, pr_number=pr_number
     )
@@ -863,10 +951,12 @@ def run_review(
         path=submission.path,
         commit_sha=initial_pr.base_sha,
     )
-    head_data = fetch_git_blob(
+    head_data = fetch_file_blob(
         token=token,
         repository=initial_pr.head_repository,
-        blob_sha=submission.blob_sha,
+        path=submission.path,
+        commit_sha=initial_pr.head_sha,
+        expected_blob_sha=submission.blob_sha,
         public_read=True,
     )
     try:
@@ -874,6 +964,9 @@ def run_review(
             base_text=decode_metadata(base_data),
             head_text=decode_metadata(head_data),
             expected_record_id=submission.record_id,
+            allow_completed_base=(
+                initial_pr.head_repository == initial_pr.base_repository
+            ),
         )
     except ValidationError as error:
         raise EligibilityError(
@@ -894,6 +987,16 @@ def run_review(
         or current_pr.head_repository != initial_pr.head_repository
     ):
         raise EligibilityError("The pull request changed while it was being reviewed.")
+
+    if review_already_completed(
+        token=token,
+        repository=repository,
+        pr_number=pr_number,
+        blob_sha=submission.blob_sha,
+    ):
+        raise AlreadyReviewed(
+            "This exact title-and-abstract file version was already reviewed."
+        )
 
     try:
         year_in_program_text = talk.fields.get("year_in_program")
@@ -928,7 +1031,7 @@ def run_review(
         or final_pr.head_repository != initial_pr.head_repository
     ):
         raise EligibilityError("The pull request changed while it was being reviewed.")
-    return result, ai_succeeded, initial_pr.head_sha
+    return result, ai_succeeded, initial_pr.head_sha, submission.blob_sha
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -939,6 +1042,15 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pr-number", required=True, help="Open pull-request number")
     parser.add_argument("--default-branch", default="main")
     parser.add_argument("--model", default=os.environ.get("OPENAI_REVIEW_MODEL") or DEFAULT_MODEL)
+    parser.add_argument(
+        "--skip-non-metadata",
+        action="store_true",
+        help="Exit successfully for an automatic PDF or ordinary maintainer PR",
+    )
+    parser.add_argument(
+        "--expected-head-sha",
+        help="Require the current PR head to match this validated commit SHA",
+    )
     return parser
 
 
@@ -950,20 +1062,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         pr_number = parse_pr_number(args.pr_number)
         _repository_api_path(args.repository)
         model = validate_model(args.model)
-        result, ai_succeeded, reviewed_head_sha = run_review(
+        result, ai_succeeded, reviewed_head_sha, reviewed_blob_sha = run_review(
             token=token,
             openai_api_key=api_key,
             repository=args.repository,
             pr_number=pr_number,
             default_branch=args.default_branch,
             model=model,
+            expected_head_sha=args.expected_head_sha,
         )
         upsert_review_comment(
             token=token,
             repository=args.repository,
             pr_number=pr_number,
-            body=format_review_comment(result, reviewed_head_sha=reviewed_head_sha),
+            body=format_review_comment(
+                result,
+                reviewed_head_sha=reviewed_head_sha,
+                completed_blob_sha=reviewed_blob_sha if ai_succeeded else None,
+            ),
         )
+    except AlreadyReviewed as error:
+        print(f"Already reviewed: {error}")
+        return 0
+    except NotMetadataSubmission as error:
+        if args.skip_non_metadata:
+            print(f"Skipping automatic AI review: {error}")
+            return 0
+        print(f"::error::{error}", file=sys.stderr)
+        return 1
     except ReviewError as error:
         print(f"::error::{error}", file=sys.stderr)
         return 1

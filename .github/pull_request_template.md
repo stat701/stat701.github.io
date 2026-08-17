@@ -31,6 +31,8 @@ For a **title and abstract** submission:
 - [ ] My proposed talk reflects the expectation for my year in the program and
       introduces the problem, area, and central ideas accessibly rather than
       compressing them into a dense technical summary.
+- [ ] I understand that the title and abstract are locked against student edits
+      after this pull request is merged.
 
 For a **slides** submission:
 
@@ -39,8 +41,10 @@ For a **slides** submission:
 - [ ] The PDF filename exactly matches my assigned record ID.
 - [ ] I opened the final PDF myself and confirmed that every page renders.
 - [ ] I did not include PowerPoint, Keynote, HTML, source files, or code.
+- [ ] I understand that the PDF is locked against student replacement after it
+      is merged.
 
 Automated checks validate the submission and verify that PDFs open and render.
-A maintainer may also run an optional advisory AI review of title/abstract
-clarity and alignment. If an automated review cannot reach a reliable decision,
-the instructor reviews the submission manually.
+After title/abstract validation succeeds, an advisory AI review runs
+automatically. PDFs are not sent to OpenAI. If an automated review cannot reach
+a reliable decision, the instructor reviews the submission manually.

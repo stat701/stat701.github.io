@@ -1,6 +1,11 @@
 name: Review title and abstract (AI)
 
 on:
+  workflow_run:
+    workflows:
+      - Validate submission
+    types:
+      - completed
   workflow_dispatch:
     inputs:
       pr_number:
@@ -13,19 +18,31 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: ai-review-pr-${{ inputs.pr_number }}
-  cancel-in-progress: true
+  # Review runs are infrequent, so one repository-wide queue is preferable to
+  # any chance that a manual and automatic run spend credits concurrently.
+  group: ai-review-stat701
+  queue: max
 
 jobs:
   review:
     name: Advisory AI review
-    # A workflow_dispatch run can be launched from another branch in the UI.
-    # Requiring main here ensures both the workflow definition and checked-out
-    # reviewer are trusted default-branch code.
+    # workflow_run supplies secrets only after the unprivileged validator has
+    # finished. This job never downloads its artifacts or checks out the pull
+    # request; it treats the submitted metadata strictly as bounded API data.
+    # A manual run remains available as a maintainer fallback.
     if: >-
-      github.event_name == 'workflow_dispatch' &&
       github.repository == 'stat701/stat701.github.io' &&
-      github.ref == 'refs/heads/main'
+      (
+        (
+          github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main'
+        ) ||
+        (
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.event == 'pull_request' &&
+          github.event.workflow_run.conclusion == 'success'
+        )
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -33,7 +50,7 @@ jobs:
       - name: Check out trusted default-branch reviewer
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -42,19 +59,86 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Review the title and abstract
+      - name: Resolve the validated pull request
+        id: pull_request
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          GITHUB_TOKEN: ${{ github.token }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_REVIEW_MODEL: ${{ vars.OPENAI_REVIEW_MODEL }}
-          PR_NUMBER: ${{ inputs.pr_number }}
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          MANUAL_PR_NUMBER: ${{ inputs.pr_number }}
           REPOSITORY: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
-          python scripts/review_submission.py \
-            --repository "$REPOSITORY" \
-            --pr-number "$PR_NUMBER" \
-            --default-branch "$DEFAULT_BRANCH" \
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            pr_number="$MANUAL_PR_NUMBER"
+            automatic=false
+            expected_head_sha=""
+          else
+            automatic=true
+            expected_head_sha="$HEAD_SHA"
+            if [[ ! "$HEAD_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
+              || [[ -z "$HEAD_OWNER" ]] \
+              || [[ -z "$HEAD_BRANCH" ]]; then
+              echo "::error::The validated workflow run has invalid head metadata."
+              exit 1
+            fi
+
+            # workflow_run payloads do not reliably populate pull_requests.
+            # Resolve the one currently open PR by its repository owner and
+            # branch, then bind it to the exact head that passed validation.
+            pull_request="$(
+              gh api \
+                --method GET \
+                "/repos/$REPOSITORY/pulls" \
+                -f state=open \
+                -f base="$DEFAULT_BRANCH" \
+                -f head="$HEAD_OWNER:$HEAD_BRANCH" \
+                --jq 'if length == 1 then [.[0].number, .[0].head.sha, .[0].base.repo.full_name, .[0].base.ref] | @tsv else "" end'
+            )"
+            IFS=$'\t' read -r pr_number resolved_head_sha base_repository base_branch \
+              <<< "$pull_request"
+            if [[ "$resolved_head_sha" != "$HEAD_SHA" ]] \
+              || [[ "$base_repository" != "$REPOSITORY" ]] \
+              || [[ "$base_branch" != "$DEFAULT_BRANCH" ]]; then
+              echo "::error::Could not bind the validated run to one current pull request."
+              exit 1
+            fi
+          fi
+
+          if [[ ! "$pr_number" =~ ^[1-9][0-9]{0,7}$ ]]; then
+            echo "::error::Could not resolve one validated pull request."
+            exit 1
+          fi
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "automatic=$automatic" >> "$GITHUB_OUTPUT"
+          echo "expected_head_sha=$expected_head_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Review the title and abstract
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXPECTED_HEAD_SHA: ${{ steps.pull_request.outputs.expected_head_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_REVIEW_MODEL: ${{ vars.OPENAI_REVIEW_MODEL }}
+          AUTOMATIC: ${{ steps.pull_request.outputs.automatic }}
+          PR_NUMBER: ${{ steps.pull_request.outputs.pr_number }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          review_arguments=(
+            --repository "$REPOSITORY"
+            --pr-number "$PR_NUMBER"
+            --default-branch "$DEFAULT_BRANCH"
             --model "${OPENAI_REVIEW_MODEL:-gpt-5.6-terra}"
+          )
+          if [[ "$AUTOMATIC" == "true" ]]; then
+            review_arguments+=(--skip-non-metadata)
+            review_arguments+=(--expected-head-sha "$EXPECTED_HEAD_SHA")
+          fi
+          python scripts/review_submission.py "${review_arguments[@]}"
