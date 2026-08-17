@@ -1,0 +1,244 @@
+name: Review slides (AI)
+
+on:
+  workflow_run:
+    workflows:
+      - Validate submission
+    types:
+      - completed
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: write
+
+concurrency:
+  # Serialize every paid review with registration so authorization cannot
+  # change while a reviewer is preparing its immutable input.
+  group: ai-review-stat701
+  queue: max
+
+jobs:
+  review:
+    name: Advisory semantic slide review
+    if: >-
+      github.repository == 'stat701/stat701.github.io' &&
+      github.event.repository.default_branch == 'main' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out trusted default-branch reviewer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Resolve the validated pull request and PDF record
+        id: pull_request
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+          HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$HEAD_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
+            || [[ -z "$HEAD_OWNER" ]] \
+            || [[ -z "$HEAD_REPOSITORY" ]] \
+            || [[ -z "$HEAD_BRANCH" ]]; then
+            echo "::error::The validated workflow run has invalid head metadata."
+            exit 1
+          fi
+
+          pull_request="$(
+            gh api \
+              --method GET \
+              "/repos/$REPOSITORY/pulls" \
+              -f state=open \
+              -f base="$DEFAULT_BRANCH" \
+              -f head="$HEAD_OWNER:$HEAD_BRANCH" \
+              --jq 'if length == 0 then "none" elif length == 1 then [.[0].number, .[0].head.sha, .[0].head.repo.full_name, .[0].base.repo.full_name, .[0].base.ref] | @tsv else "ambiguous" end'
+          )"
+          if [[ "$pull_request" == "none" ]]; then
+            echo "review_eligible=false" >> "$GITHUB_OUTPUT"
+            echo "The validated pull request is no longer open; skipping slide review."
+            exit 0
+          fi
+          if [[ "$pull_request" == "ambiguous" ]]; then
+            echo "::error::More than one open pull request matched the validated branch."
+            exit 1
+          fi
+          IFS=$'\t' read -r pr_number resolved_head_sha resolved_head_repository \
+            base_repository base_branch <<< "$pull_request"
+          if [[ ! "$pr_number" =~ ^[1-9][0-9]{0,7}$ ]] \
+            || [[ "$resolved_head_sha" != "$HEAD_SHA" ]] \
+            || [[ "$resolved_head_repository" != "$HEAD_REPOSITORY" ]] \
+            || [[ "$base_repository" != "$REPOSITORY" ]] \
+            || [[ "$base_branch" != "$DEFAULT_BRANCH" ]]; then
+            echo "::error::Could not bind the validated run to one current pull request."
+            exit 1
+          fi
+
+          details="$(
+            gh api \
+              --method GET \
+              "/repos/$REPOSITORY/pulls/$pr_number" \
+              --jq '[.head.sha, .head.repo.full_name, .user.id, .user.login, .user.type, .changed_files] | @tsv'
+          )"
+          IFS=$'\t' read -r current_head_sha current_head_repository author_id \
+            author_login author_type changed_files <<< "$details"
+          if [[ "$current_head_sha" != "$HEAD_SHA" ]] \
+            || [[ "$current_head_repository" != "$HEAD_REPOSITORY" ]] \
+            || [[ ! "$changed_files" =~ ^[0-9]+$ ]]; then
+            echo "::error::The current pull-request head is invalid."
+            exit 1
+          fi
+
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "expected_head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+          # Ordinary maintainer PRs may contain several files. They are valid
+          # repository work, but never student slide-review events.
+          if [[ "$changed_files" != "1" ]]; then
+            echo "review_eligible=false" >> "$GITHUB_OUTPUT"
+            echo "The validated pull request is not a single-file student submission."
+            exit 0
+          fi
+
+          changed_file="$(
+            gh api \
+              --method GET \
+              "/repos/$REPOSITORY/pulls/$pr_number/files" \
+              -f per_page=100 \
+              -f page=1 \
+              --jq 'if length == 1 then [.[0].filename, .[0].status] | @tsv else "" end'
+          )"
+          IFS=$'\t' read -r submission_path change_status <<< "$changed_file"
+
+          if [[ ! "$submission_path" =~ ^assets/slides/fall-2026/(fall-2026-(0[1-9]|1[0-6]))\.pdf$ ]]; then
+            echo "review_eligible=false" >> "$GITHUB_OUTPUT"
+            echo "The validated pull request is not a Fall 2026 slide submission."
+            exit 0
+          fi
+          record_id="${BASH_REMATCH[1]}"
+
+          if [[ ! "$author_id" =~ ^[1-9][0-9]*$ ]] \
+            || [[ ! "$author_login" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] \
+            || [[ "$author_type" != "User" ]]; then
+            echo "::error::Only an individual GitHub user may submit seminar slides."
+            exit 1
+          fi
+
+          # An instructor's reviewed same-repository correction is never a
+          # student semantic-review event.
+          if [[ "$current_head_repository" == "$REPOSITORY" ]] \
+            && [[ "$author_id" == "12053767" ]] \
+            && [[ "$author_type" == "User" ]]; then
+            echo "review_eligible=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping the registrar's same-repository correction."
+            exit 0
+          fi
+
+          if [[ "$change_status" != "added" ]]; then
+            echo "::error::A student PDF must be added in its own pull request."
+            exit 1
+          fi
+
+          echo "review_eligible=true" >> "$GITHUB_OUTPUT"
+          echo "record_id=$record_id" >> "$GITHUB_OUTPUT"
+          echo "author_id=$author_id" >> "$GITHUB_OUTPUT"
+          echo "author_login=$author_login" >> "$GITHUB_OUTPUT"
+          echo "author_type=$author_type" >> "$GITHUB_OUTPUT"
+          echo "head_repository=$current_head_repository" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the registered PDF owner
+        id: ownership
+        if: steps.pull_request.outputs.review_eligible == 'true'
+        env:
+          AUTHOR_ID: ${{ steps.pull_request.outputs.author_id }}
+          AUTHOR_LOGIN: ${{ steps.pull_request.outputs.author_login }}
+          AUTHOR_TYPE: ${{ steps.pull_request.outputs.author_type }}
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_REPOSITORY: ${{ steps.pull_request.outputs.head_repository }}
+          RECORD_ID: ${{ steps.pull_request.outputs.record_id }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          registry_arguments=(
+            check-pr
+            --token-env GITHUB_TOKEN
+            --repository "$REPOSITORY"
+            --record-id "$RECORD_ID"
+            --submission-type slides
+            --author-id "$AUTHOR_ID"
+            --author-login "$AUTHOR_LOGIN"
+            --author-type "$AUTHOR_TYPE"
+            --head-repository "$HEAD_REPOSITORY"
+          )
+          registry_result="$(
+            python scripts/submission_registry.py "${registry_arguments[@]}"
+          )"
+          printf '%s\n' "$registry_result"
+          registry_status="$(jq --exit-status --raw-output '.status' <<< "$registry_result")"
+          if [[ "$registry_status" != "owner_match" ]]; then
+            echo "::error::The PDF owner did not match the trusted registration ledger."
+            exit 1
+          fi
+          registered_owner_id="$(
+            jq --exit-status --raw-output '.registered_owner_id' <<< "$registry_result"
+          )"
+          registered_owner_login="$(
+            jq --exit-status --raw-output '.registered_owner_login' <<< "$registry_result"
+          )"
+          if [[ ! "$registered_owner_id" =~ ^[1-9][0-9]*$ ]] \
+            || [[ "$registered_owner_id" != "$AUTHOR_ID" ]] \
+            || [[ ! "$registered_owner_login" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]]; then
+            echo "::error::The trusted registry returned an invalid owner identity."
+            exit 1
+          fi
+          echo "authorized_user_id=$registered_owner_id" >> "$GITHUB_OUTPUT"
+          echo "authorized_login=$registered_owner_login" >> "$GITHUB_OUTPUT"
+
+      - name: Review the PDF semantically
+        if: steps.pull_request.outputs.review_eligible == 'true'
+        env:
+          AUTHORIZED_LOGIN: ${{ steps.ownership.outputs.authorized_login }}
+          AUTHORIZED_USER_ID: ${{ steps.ownership.outputs.authorized_user_id }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXPECTED_HEAD_SHA: ${{ steps.pull_request.outputs.expected_head_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_PDF_REVIEW_MODEL: ${{ vars.OPENAI_PDF_REVIEW_MODEL }}
+          PR_NUMBER: ${{ steps.pull_request.outputs.pr_number }}
+          RECORD_ID: ${{ steps.pull_request.outputs.record_id }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python scripts/review_slides.py \
+            --repository "$REPOSITORY" \
+            --pr-number "$PR_NUMBER" \
+            --default-branch "$DEFAULT_BRANCH" \
+            --expected-head-sha "$EXPECTED_HEAD_SHA" \
+            --authorized-user-id "$AUTHORIZED_USER_ID" \
+            --authorized-record-id "$RECORD_ID" \
+            --authorized-login "$AUTHORIZED_LOGIN" \
+            --model "${OPENAI_PDF_REVIEW_MODEL:-gpt-5.6-terra}" \
+            --skip-non-slides

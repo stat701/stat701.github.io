@@ -1,0 +1,4 @@
+interface:
+  display_name: "STA 701 Slide Reviewer"
+  short_description: "Review seminar slides for audience accessibility"
+  default_prompt: "Use $stat701-slide-review to review this seminar-slide PDF for audience accessibility and narrative clarity."
