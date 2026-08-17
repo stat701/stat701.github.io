@@ -7,5 +7,15 @@ baseurl: ""
 # enabled makes it easy to add Markdown pages later.
 markdown: kramdown
 
+collections:
+  talks:
+    output: false
+
 exclude:
   - README.md
+  - CONTRIBUTING.md
+  - Gemfile
+  - Gemfile.lock
+  - scripts
+  - tests
+  - xlsx

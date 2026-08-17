@@ -1,0 +1,10 @@
+# Course staff must review changes to automation, site structure, and student
+# submission records before they reach the public website.
+/.github/ @volfovsky
+/scripts/ @volfovsky
+/tests/ @volfovsky
+/_config.yml @volfovsky
+/index.html @volfovsky
+/assets/css/ @volfovsky
+/_talks/ @volfovsky
+/assets/slides/ @volfovsky

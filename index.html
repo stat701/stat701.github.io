@@ -1,3 +1,6 @@
+---
+layout: null
+---
 <!doctype html>
 <html lang="en">
   <head>
@@ -208,217 +211,83 @@
             <p class="section-index">03 / Calendar</p>
             <h2 id="schedule-heading">Fall 2026 seminar calendar.</h2>
           </div>
-          <p>The current speaker calendar is shown below. Two presentations are scheduled for each listed meeting.</p>
+          <div class="schedule-section__intro">
+            <p>The current speaker calendar is shown below. Two presentations are scheduled for each listed meeting.</p>
+            <a class="schedule-guide-link" href="https://github.com/stat701/stat701.github.io/blob/main/CONTRIBUTING.md">Student submission guide <span aria-hidden="true">↗</span></a>
+          </div>
         </div>
 
+        {% assign fall_talks = site.talks | where: "semester", "fall-2026" | sort: "record_id" %}
+        {% assign current_session = "" %}
         <ol class="schedule-list" role="list">
-          <li class="schedule-meeting">
-            <h3 class="schedule-date" id="session-2026-08-31">
-              <time datetime="2026-08-31">
-                <span class="schedule-date__day">31</span>
-                <span class="schedule-date__month">Aug</span>
-                <span class="schedule-date__weekday">Monday</span>
-              </time>
-            </h3>
-            <ol class="schedule-speakers" role="list" aria-labelledby="session-2026-08-31">
-              <li class="schedule-speaker">
-                <span class="schedule-speaker__order" aria-hidden="true">01</span>
-                <div>
-                  <p class="schedule-speaker__name">Lorenzo Mauri</p>
-                  <p class="schedule-speaker__meta">Year 5</p>
-                </div>
+          {% for talk in fall_talks %}
+            {% assign talk_date = talk.date | date: "%Y-%m-%d" %}
+            {% if talk_date != current_session %}
+              {% unless current_session == "" %}
+                </ol>
               </li>
-              <li class="schedule-speaker">
-                <span class="schedule-speaker__order" aria-hidden="true">02</span>
-                <div>
-                  <p class="schedule-speaker__name">Patrick Woitschig</p>
-                  <p class="schedule-speaker__meta">Year 4</p>
-                </div>
-              </li>
-            </ol>
-          </li>
+              {% endunless %}
+              <li class="schedule-meeting">
+                <h3 class="schedule-date" id="session-{{ talk_date }}">
+                  <time datetime="{{ talk_date }}">
+                    <span class="schedule-date__day">{{ talk.date | date: "%d" }}</span>
+                    <span class="schedule-date__month">{{ talk.date | date: "%b" }}</span>
+                    <span class="schedule-date__weekday">{{ talk.date | date: "%A" }}</span>
+                  </time>
+                </h3>
+                <ol class="schedule-speakers" role="list" aria-labelledby="session-{{ talk_date }}">
+              {% assign current_session = talk_date %}
+            {% endif %}
 
-          <li class="schedule-meeting">
-            <h3 class="schedule-date" id="session-2026-09-14">
-              <time datetime="2026-09-14">
-                <span class="schedule-date__day">14</span>
-                <span class="schedule-date__month">Sep</span>
-                <span class="schedule-date__weekday">Monday</span>
-              </time>
-            </h3>
-            <ol class="schedule-speakers" role="list" aria-labelledby="session-2026-09-14">
-              <li class="schedule-speaker">
-                <span class="schedule-speaker__order" aria-hidden="true">01</span>
-                <div>
-                  <p class="schedule-speaker__name">Leah Johnson</p>
-                  <p class="schedule-speaker__meta">Year 5</p>
-                </div>
-              </li>
-              <li class="schedule-speaker">
-                <span class="schedule-speaker__order" aria-hidden="true">02</span>
-                <div>
-                  <p class="schedule-speaker__name">Piotr Suder</p>
-                  <p class="schedule-speaker__meta">Year 5</p>
-                </div>
-              </li>
-            </ol>
-          </li>
+            {% assign talk_title = talk.title | default: "" | strip %}
+            {% assign slide_path = "/assets/slides/" | append: talk.semester | append: "/" | append: talk.record_id | append: ".pdf" %}
+            {% assign slides_available = false %}
+            {% for static_file in site.static_files %}
+              {% if static_file.path == slide_path %}
+                {% assign slides_available = true %}
+                {% break %}
+              {% endif %}
+            {% endfor %}
 
-          <li class="schedule-meeting">
-            <h3 class="schedule-date" id="session-2026-09-21">
-              <time datetime="2026-09-21">
-                <span class="schedule-date__day">21</span>
-                <span class="schedule-date__month">Sep</span>
-                <span class="schedule-date__weekday">Monday</span>
-              </time>
-            </h3>
-            <ol class="schedule-speakers" role="list" aria-labelledby="session-2026-09-21">
-              <li class="schedule-speaker">
-                <span class="schedule-speaker__order" aria-hidden="true">01</span>
-                <div>
-                  <p class="schedule-speaker__name">Yen-Chun Liu</p>
-                  <p class="schedule-speaker__meta">Year 5</p>
-                </div>
-              </li>
-              <li class="schedule-speaker">
-                <span class="schedule-speaker__order" aria-hidden="true">02</span>
-                <div>
-                  <p class="schedule-speaker__name">Gwen Jacobson</p>
-                  <p class="schedule-speaker__meta">Year 4</p>
-                </div>
-              </li>
-            </ol>
-          </li>
+            <li class="schedule-speaker" id="{{ talk.record_id }}">
+              <span class="schedule-speaker__order" aria-hidden="true">0{{ talk.order }}</span>
+              <div class="schedule-speaker__content">
+                <p class="schedule-speaker__name">{{ talk.speaker | escape }}</p>
+                <p class="schedule-speaker__meta">Year {{ talk.year_in_program }} · {{ talk.record_id }}</p>
 
-          <li class="schedule-meeting">
-            <h3 class="schedule-date" id="session-2026-09-28">
-              <time datetime="2026-09-28">
-                <span class="schedule-date__day">28</span>
-                <span class="schedule-date__month">Sep</span>
-                <span class="schedule-date__weekday">Monday</span>
-              </time>
-            </h3>
-            <ol class="schedule-speakers" role="list" aria-labelledby="session-2026-09-28">
-              <li class="schedule-speaker">
-                <span class="schedule-speaker__order" aria-hidden="true">01</span>
-                <div>
-                  <p class="schedule-speaker__name">Vivek Singh</p>
-                  <p class="schedule-speaker__meta">Year 4</p>
-                </div>
-              </li>
-              <li class="schedule-speaker">
-                <span class="schedule-speaker__order" aria-hidden="true">02</span>
-                <div>
-                  <p class="schedule-speaker__name">Caitrin Murphy</p>
-                  <p class="schedule-speaker__meta">Year 5</p>
-                </div>
-              </li>
-            </ol>
-          </li>
+                {% if talk_title != "" %}
+                  <h4 class="schedule-speaker__title">
+                    {% if slides_available %}
+                      <a href="{{ slide_path | relative_url }}" target="_blank" rel="noopener noreferrer" aria-label="{{ talk_title | escape }} (PDF, opens in a new tab)">{{ talk_title | escape }}</a>
+                    {% else %}
+                      {{ talk_title | escape }}
+                    {% endif %}
+                  </h4>
+                  <details class="schedule-speaker__abstract">
+                    <summary>Read abstract</summary>
+                    <div>{{ talk.content }}</div>
+                  </details>
+                {% else %}
+                  <p class="schedule-speaker__status">Title and abstract forthcoming.</p>
+                {% endif %}
 
-          <li class="schedule-meeting">
-            <h3 class="schedule-date" id="session-2026-10-19">
-              <time datetime="2026-10-19">
-                <span class="schedule-date__day">19</span>
-                <span class="schedule-date__month">Oct</span>
-                <span class="schedule-date__weekday">Monday</span>
-              </time>
-            </h3>
-            <ol class="schedule-speakers" role="list" aria-labelledby="session-2026-10-19">
-              <li class="schedule-speaker">
-                <span class="schedule-speaker__order" aria-hidden="true">01</span>
-                <div>
-                  <p class="schedule-speaker__name">Kateryna “Kat” Husar</p>
-                  <p class="schedule-speaker__meta">Year 5</p>
+                <div class="schedule-speaker__actions">
+                  {% if slides_available %}
+                    <a class="talk-link talk-link--pdf" href="{{ slide_path | relative_url }}" target="_blank" rel="noopener noreferrer" aria-label="Slides for {{ talk.speaker | escape }} (PDF, opens in a new tab)">Slides (PDF) <span aria-hidden="true">↗</span></a>
+                  {% elsif talk_title != "" %}
+                    <a class="talk-link" href="https://github.com/stat701/stat701.github.io/blob/main/CONTRIBUTING.md#second-pull-request-pdf-slides">Submit PDF slides <span aria-hidden="true">↗</span></a>
+                  {% else %}
+                    <a class="talk-link" href="https://github.com/stat701/stat701.github.io/edit/main/_talks/{{ talk.record_id }}.md">Submit title and abstract <span aria-hidden="true">↗</span></a>
+                  {% endif %}
                 </div>
-              </li>
-              <li class="schedule-speaker">
-                <span class="schedule-speaker__order" aria-hidden="true">02</span>
-                <div>
-                  <p class="schedule-speaker__name">DongKyu “Derek” Cho</p>
-                  <p class="schedule-speaker__meta">Year 4</p>
-                </div>
-              </li>
-            </ol>
-          </li>
+              </div>
+            </li>
 
-          <li class="schedule-meeting">
-            <h3 class="schedule-date" id="session-2026-10-26">
-              <time datetime="2026-10-26">
-                <span class="schedule-date__day">26</span>
-                <span class="schedule-date__month">Oct</span>
-                <span class="schedule-date__weekday">Monday</span>
-              </time>
-            </h3>
-            <ol class="schedule-speakers" role="list" aria-labelledby="session-2026-10-26">
-              <li class="schedule-speaker">
-                <span class="schedule-speaker__order" aria-hidden="true">01</span>
-                <div>
-                  <p class="schedule-speaker__name">Suchismita Roy</p>
-                  <p class="schedule-speaker__meta">Year 5</p>
-                </div>
+            {% if forloop.last %}
+                </ol>
               </li>
-              <li class="schedule-speaker">
-                <span class="schedule-speaker__order" aria-hidden="true">02</span>
-                <div>
-                  <p class="schedule-speaker__name">Shuo Wang</p>
-                  <p class="schedule-speaker__meta">Year 4</p>
-                </div>
-              </li>
-            </ol>
-          </li>
-
-          <li class="schedule-meeting">
-            <h3 class="schedule-date" id="session-2026-11-09">
-              <time datetime="2026-11-09">
-                <span class="schedule-date__day">09</span>
-                <span class="schedule-date__month">Nov</span>
-                <span class="schedule-date__weekday">Monday</span>
-              </time>
-            </h3>
-            <ol class="schedule-speakers" role="list" aria-labelledby="session-2026-11-09">
-              <li class="schedule-speaker">
-                <span class="schedule-speaker__order" aria-hidden="true">01</span>
-                <div>
-                  <p class="schedule-speaker__name">Li Fan</p>
-                  <p class="schedule-speaker__meta">Year 4</p>
-                </div>
-              </li>
-              <li class="schedule-speaker">
-                <span class="schedule-speaker__order" aria-hidden="true">02</span>
-                <div>
-                  <p class="schedule-speaker__name">Marie Neubrander</p>
-                  <p class="schedule-speaker__meta">Year 4</p>
-                </div>
-              </li>
-            </ol>
-          </li>
-
-          <li class="schedule-meeting">
-            <h3 class="schedule-date" id="session-2026-11-16">
-              <time datetime="2026-11-16">
-                <span class="schedule-date__day">16</span>
-                <span class="schedule-date__month">Nov</span>
-                <span class="schedule-date__weekday">Monday</span>
-              </time>
-            </h3>
-            <ol class="schedule-speakers" role="list" aria-labelledby="session-2026-11-16">
-              <li class="schedule-speaker">
-                <span class="schedule-speaker__order" aria-hidden="true">01</span>
-                <div>
-                  <p class="schedule-speaker__name">Jaehoan Kim</p>
-                  <p class="schedule-speaker__meta">Year 4</p>
-                </div>
-              </li>
-              <li class="schedule-speaker">
-                <span class="schedule-speaker__order" aria-hidden="true">02</span>
-                <div>
-                  <p class="schedule-speaker__name">Gyeonghun “Hun” Kang</p>
-                  <p class="schedule-speaker__meta">Year 4</p>
-                </div>
-              </li>
-            </ol>
-          </li>
+            {% endif %}
+          {% endfor %}
         </ol>
       </section>
 
