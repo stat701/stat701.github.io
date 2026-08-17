@@ -1,0 +1,60 @@
+name: Review title and abstract (AI)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open title-and-abstract pull-request number
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ai-review-pr-${{ inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Advisory AI review
+    # A workflow_dispatch run can be launched from another branch in the UI.
+    # Requiring main here ensures both the workflow definition and checked-out
+    # reviewer are trusted default-branch code.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'stat701/stat701.github.io' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out trusted default-branch reviewer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Review the title and abstract
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_TOKEN: ${{ github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_REVIEW_MODEL: ${{ vars.OPENAI_REVIEW_MODEL }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/review_submission.py \
+            --repository "$REPOSITORY" \
+            --pr-number "$PR_NUMBER" \
+            --default-branch "$DEFAULT_BRANCH" \
+            --model "${OPENAI_REVIEW_MODEL:-gpt-5.6-terra}"

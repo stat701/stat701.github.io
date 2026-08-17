@@ -1,0 +1,159 @@
+name: Validate submission
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+
+concurrency:
+  group: submission-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate submission
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out the pull request as untrusted data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          path: submission
+          persist-credentials: false
+
+      - name: Check out the trusted validator from the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          path: trusted
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+          repository: ${{ github.event.pull_request.base.repo.full_name }}
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Test the trusted validator
+        env:
+          BASE_REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -f trusted/scripts/validate_submission.py ]]; then
+            cd trusted
+            python -m unittest discover -s tests -v
+          elif [[ "$HEAD_REPOSITORY" == "$BASE_REPOSITORY" ]]; then
+            echo "Bootstrap pull request: testing the candidate validator without granting it secrets or write access."
+            cd submission
+            python -m unittest discover -s tests -v
+          else
+            echo "::error::The trusted base commit does not contain the submission validator."
+            exit 1
+          fi
+
+      - name: Validate the pull-request submission
+        id: submission
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f trusted/scripts/validate_submission.py && "$HEAD_REPOSITORY" == "$BASE_REPOSITORY" ]]; then
+            echo "Bootstrap pull request: student file policy becomes active after this change reaches main."
+            {
+              echo "submission_type=none"
+              echo "submission_path="
+              echo "record_id="
+            } >> "$GITHUB_OUTPUT"
+          else
+            git -C submission cat-file -e "${BASE_SHA}^{commit}"
+            git -C submission cat-file -e "${HEAD_SHA}^{commit}"
+            cd submission
+            python ../trusted/scripts/validate_submission.py \
+              --base "$BASE_SHA" \
+              --head "$HEAD_SHA" \
+              --github-output "$GITHUB_OUTPUT"
+
+            if [[ "$HEAD_REPOSITORY" != "$BASE_REPOSITORY" ]] \
+              && [[ "$(grep '^submission_type=' "$GITHUB_OUTPUT" | tail -n 1)" == "submission_type=none" ]]; then
+              echo "::error::A fork pull request must contain exactly one title/abstract submission or one PDF submission."
+              exit 1
+            fi
+          fi
+
+      - name: Install PDF validation tools
+        if: steps.submission.outputs.submission_type == 'slides'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes poppler-utils qpdf
+
+      - name: Check and render every PDF page
+        if: steps.submission.outputs.submission_type == 'slides'
+        working-directory: submission
+        env:
+          PDF_PATH: ${{ steps.submission.outputs.submission_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          timeout 45s qpdf --check "$PDF_PATH"
+
+          pdf_information="$(timeout 45s pdfinfo "$PDF_PATH")"
+          printf '%s\n' "$pdf_information"
+
+          if grep --ignore-case --quiet '^Encrypted:[[:space:]]*yes' <<< "$pdf_information"; then
+            echo "::error::Encrypted PDFs are not accepted. Export an unencrypted PDF."
+            exit 1
+          fi
+
+          javascript="$(timeout 45s pdfinfo -js "$PDF_PATH")"
+          if [[ -n "$javascript" ]]; then
+            echo "::error::PDFs containing JavaScript are not accepted. Export a standard presentation PDF."
+            exit 1
+          fi
+
+          embedded_files="$(timeout 45s pdfdetach -list "$PDF_PATH")"
+          if [[ "$embedded_files" != "0 embedded files" ]]; then
+            echo "::error::PDFs containing embedded files are not accepted. Export slides without attachments."
+            exit 1
+          fi
+
+          page_count="$(awk -F: '/^Pages:/ {gsub(/[[:space:]]/, "", $2); print $2}' <<< "$pdf_information")"
+          if [[ ! "$page_count" =~ ^[0-9]+$ ]] || (( page_count < 1 || page_count > 200 )); then
+            echo "::error::The PDF must contain between 1 and 200 pages."
+            exit 1
+          fi
+
+          render_directory="$(mktemp -d)"
+          timeout 180s pdftoppm \
+            -png \
+            -r 36 \
+            "$PDF_PATH" \
+            "$render_directory/page" \
+            >/dev/null
+
+          rendered_count="$(find "$render_directory" -type f -name 'page-*.png' -size +0c | wc -l | tr -d '[:space:]')"
+          if [[ "$rendered_count" != "$page_count" ]]; then
+            echo "::error::Expected $page_count rendered pages but produced $rendered_count. Human review is required."
+            exit 1
+          fi
+
+          echo "Successfully opened and rendered all $page_count PDF pages."

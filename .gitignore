@@ -2,3 +2,6 @@
 _site/
 .jekyll-cache/
 .sass-cache/
+/xlsx/
+__pycache__/
+*.py[cod]
