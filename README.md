@@ -54,9 +54,10 @@ every page with `qpdf` and Poppler before a slides pull request can be merged.
 
 The **Review title and abstract (AI)** workflow is advisory and must be started
 manually by a maintainer for a specific pull-request number. It reads only the
-submitted title and abstract, uses a fixed rubric and strict structured output,
-posts one clearly labeled comment, and never approves or merges a pull request.
-API errors and uncertain results request human review.
+submitted title and abstract together with the immutable year in program, uses
+a fixed year-aware rubric and strict structured output, posts one clearly
+labeled comment, and never approves or merges a pull request. API errors and
+uncertain results request human review.
 
 To enable it:
 

@@ -8,6 +8,20 @@ Each speaker makes two separate submissions through GitHub:
 You will use GitHub's website for both submissions. You will not submit code,
 and you do not need command-line Git.
 
+## What kind of talk should I prepare?
+
+Your topic should reflect your stage in the program:
+
+- Third-year students should develop and present an idea that may grow into a
+  research project.
+- Fourth- and fifth-year students should present their research in progress or
+  completed work.
+
+For every speaker, the central goal is to give the seminar an accessible
+introduction to the problem, area, and main ideas. Provide enough motivation
+and context for a broad statistical audience to participate in the discussion;
+do not try to compress a paper into a dense technical treatise.
+
 ## Before you begin
 
 - Create a free [GitHub account](https://github.com/signup) if you do not
@@ -47,7 +61,9 @@ Replace `fall-2026-01` with your assigned record ID.
    ```
 
 4. Below the second `---` line, replace the instructional HTML comment with
-   your abstract. Write the abstract as ordinary prose. Do not change
+   your abstract. Write it as ordinary prose for a broad statistical audience:
+   identify the problem or area, explain why it matters, state the central
+   idea, and tell the audience what they should expect to learn. Do not change
    `record_id`, `speaker`, `date`, `order`, `year_in_program`, or `semester`.
 5. Select **Commit changes…** or **Propose changes**. Use a short commit message
    such as `Add title and abstract for fall-2026-01`.
@@ -116,10 +132,9 @@ GitHub runs checks on each pull request.
   assigned file changed, the protected scheduling fields stayed unchanged,
   and both a substantive title and abstract are present. A maintainer may also
   run an optional automated review of whether the title and abstract are
-  coherent, agree with one another, and clearly describe an interesting
-  statistical idea for a statistics Ph.D. seminar. It does not require you to
-  present your own research, and it does not judge novelty or factual
-  correctness.
+  coherent, motivating, appropriate to your year in the program, and framed as
+  an accessible introduction rather than a dense technical summary. It does
+  not judge novelty or factual correctness.
 - For a slides submission, the checks confirm that the pull request adds only
   the correctly named PDF and that the file can be opened and rendered.
 

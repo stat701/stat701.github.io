@@ -28,6 +28,9 @@ For a **title and abstract** submission:
       `semester` unchanged.
 - [ ] My title and abstract describe the same statistical idea and make clear
       what the audience should expect to learn.
+- [ ] My proposed talk reflects the expectation for my year in the program and
+      introduces the problem, area, and central ideas accessibly rather than
+      compressing them into a dense technical summary.
 
 For a **slides** submission:
 
