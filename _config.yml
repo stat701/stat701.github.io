@@ -1,0 +1,11 @@
+title: "STA 701S | Duke Statistical Science"
+description: "Duke Statistical Science's graduate research seminar—a forum for developing work, constructive feedback, and learning across research areas."
+url: "https://stat701.github.io"
+baseurl: ""
+
+# The landing page is plain HTML/CSS. Keeping Jekyll's default processing
+# enabled makes it easy to add Markdown pages later.
+markdown: kramdown
+
+exclude:
+  - README.md
