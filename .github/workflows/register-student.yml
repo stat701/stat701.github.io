@@ -1,0 +1,77 @@
+name: Register student and review
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open title-and-abstract pull-request number
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  # Registration and every model review share one queue so an enrollment
+  # cannot race an automatic revision review for the same scheduled record.
+  group: ai-review-stat701
+  queue: max
+
+jobs:
+  register-and-review:
+    name: Register owner and run first review
+    if: >-
+      github.repository == 'stat701/stat701.github.io' &&
+      github.event.repository.default_branch == 'main' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor_id == '12053767' &&
+      github.event.sender.type == 'User'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out trusted default-branch reviewer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Register the student and review the title and abstract
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_TOKEN: ${{ github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_REVIEW_MODEL: ${{ vars.OPENAI_REVIEW_MODEL }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REGISTRAR_ID: ${{ github.actor_id }}
+          REGISTRAR_LOGIN: ${{ github.actor }}
+          REGISTRAR_TYPE: ${{ github.event.sender.type }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]{0,7}$ ]]; then
+            echo "::error::Enter one open pull-request number."
+            exit 1
+          fi
+
+          python scripts/review_submission.py \
+            --repository "$REPOSITORY" \
+            --pr-number "$PR_NUMBER" \
+            --default-branch "$DEFAULT_BRANCH" \
+            --model "${OPENAI_REVIEW_MODEL:-gpt-5.6-terra}" \
+            --register-owner \
+            --registrar-id "$REGISTRAR_ID" \
+            --registrar-login "$REGISTRAR_LOGIN" \
+            --registrar-type "$REGISTRAR_TYPE" \
+            --workflow-run-id "$WORKFLOW_RUN_ID"

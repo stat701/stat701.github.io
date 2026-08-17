@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import dataclasses
 import hashlib
 import json
 import unittest
@@ -9,14 +10,19 @@ from io import StringIO
 from unittest import mock
 
 from scripts.review_submission import (
+    ACTIONS_BOT_ID,
     AlreadyReviewed,
     COMMENT_MARKER,
     EligibilityError,
+    GitHubAPIError,
+    MaintainerSubmission,
     NotMetadataSubmission,
     OpenAIReviewError,
     PullRequestInfo,
     ReviewResult,
     SubmissionFile,
+    UnregisteredStudent,
+    _bot_attempted_blob_shas,
     _bot_completed_blob_shas,
     _bot_marker_comments,
     build_openai_request,
@@ -25,12 +31,21 @@ from scripts.review_submission import (
     format_review_comment,
     fetch_file_blob,
     fetch_git_blob,
+    fetch_pull_request,
     parse_openai_response,
+    record_review_attempt,
     main as review_main,
     run_review,
     upsert_review_comment,
     validate_review_data,
 )
+
+
+ACTIONS_BOT_USER = {
+    "id": ACTIONS_BOT_ID,
+    "login": "github-actions[bot]",
+    "type": "Bot",
+}
 
 
 BASE_TALK = """\
@@ -218,6 +233,67 @@ class ImmutableBlobTests(unittest.TestCase):
                 )
 
 
+class PullRequestIdentityTests(unittest.TestCase):
+    @staticmethod
+    def _payload() -> dict[str, object]:
+        return {
+            "number": 7,
+            "state": "open",
+            "changed_files": 1,
+            "user": {"id": 24680, "login": "ada-student", "type": "User"},
+            "base": {
+                "ref": "main",
+                "sha": "a" * 40,
+                "repo": {
+                    "full_name": "stat701/stat701.github.io",
+                    "private": False,
+                },
+            },
+            "head": {
+                "ref": "title-and-abstract",
+                "sha": "b" * 40,
+                "repo": {
+                    "full_name": "speaker/stat701.github.io",
+                    "private": False,
+                },
+            },
+        }
+
+    def test_fetches_stable_numeric_pr_author_identity(self) -> None:
+        with mock.patch(
+            "scripts.review_submission.github_request", return_value=self._payload()
+        ):
+            pull_request = fetch_pull_request(
+                token="opaque-token",
+                repository="stat701/stat701.github.io",
+                pr_number=7,
+                default_branch="main",
+            )
+
+        self.assertEqual(pull_request.author_id, 24680)
+        self.assertEqual(pull_request.author_login, "ada-student")
+        self.assertEqual(pull_request.author_type, "User")
+
+    def test_rejects_bot_author_before_registration_or_openai(self) -> None:
+        payload = self._payload()
+        payload["user"] = {
+            "id": ACTIONS_BOT_ID,
+            "login": "github-actions[bot]",
+            "type": "Bot",
+        }
+
+        with mock.patch(
+            "scripts.review_submission.github_request", return_value=payload
+        ):
+            with self.assertRaisesRegex(EligibilityError, "individual GitHub user"):
+                fetch_pull_request(
+                    token="opaque-token",
+                    repository="stat701/stat701.github.io",
+                    pr_number=7,
+                    default_branch="main",
+                )
+
+
 class OpenAIResponseTests(unittest.TestCase):
     def setUp(self) -> None:
         self.review = {
@@ -379,7 +455,7 @@ class CommentFormattingTests(unittest.TestCase):
             {
                 "id": 42,
                 "body": COMMENT_MARKER,
-                "user": {"login": "github-actions[bot]"},
+                "user": ACTIONS_BOT_USER,
             },
         ]
 
@@ -397,11 +473,142 @@ class CommentFormattingTests(unittest.TestCase):
             {
                 "id": 42,
                 "body": f"<!-- stat701-ai-review-complete:{second_blob} -->",
-                "user": {"login": "github-actions[bot]"},
+                "user": ACTIONS_BOT_USER,
             },
         ]
 
         self.assertEqual(_bot_completed_blob_shas(comments), {second_blob})
+
+    def test_attempt_marker_spoof_is_ignored_without_verified_bot_id(self) -> None:
+        attempted_blob = "a" * 40
+        comments = [
+            {
+                "id": 99,
+                "body": f"<!-- stat701-ai-review-attempted:{attempted_blob} -->",
+                "user": {
+                    "id": 12345,
+                    "login": "github-actions[bot]",
+                    "type": "Bot",
+                },
+            }
+        ]
+
+        self.assertEqual(_bot_attempted_blob_shas(comments), set())
+
+    def test_record_attempt_persists_marker_before_external_review(self) -> None:
+        blob_sha = "d" * 40
+        responses: list[object] = [[], []]
+
+        def request_side_effect(**kwargs: object) -> object:
+            if responses:
+                return responses.pop(0)
+            payload = kwargs["payload"]
+            assert isinstance(payload, dict)
+            return {
+                "id": 42,
+                "body": payload["body"],
+                "user": ACTIONS_BOT_USER,
+            }
+
+        with mock.patch(
+            "scripts.review_submission.github_request",
+            side_effect=request_side_effect,
+        ) as request:
+            record_review_attempt(
+                token="opaque-token",
+                repository="stat701/stat701.github.io",
+                pr_number=7,
+                blob_sha=blob_sha,
+            )
+
+        posted_body = request.call_args_list[2].kwargs["payload"]["body"]
+        self.assertIn(
+            f"<!-- stat701-ai-review-attempted:{blob_sha} -->", posted_body
+        )
+        self.assertIn("maintainer should review", posted_body)
+
+    def test_exact_blob_attempt_is_never_written_twice(self) -> None:
+        blob_sha = "e" * 40
+        existing_comments = [
+            {
+                "id": 42,
+                "body": (
+                    f"{COMMENT_MARKER}\n"
+                    f"<!-- stat701-ai-review-attempted:{blob_sha} -->\n"
+                    "Review attempt already recorded"
+                ),
+                "user": ACTIONS_BOT_USER,
+            }
+        ]
+
+        with mock.patch(
+            "scripts.review_submission.github_request",
+            return_value=existing_comments,
+        ) as request:
+            with self.assertRaises(AlreadyReviewed):
+                record_review_attempt(
+                    token="opaque-token",
+                    repository="stat701/stat701.github.io",
+                    pr_number=7,
+                    blob_sha=blob_sha,
+                )
+
+        request.assert_called_once()
+
+    def test_new_attempt_replaces_stale_visible_review_with_pending_notice(self) -> None:
+        old_blob = "a" * 40
+        new_blob = "b" * 40
+        old_comment = {
+            "id": 42,
+            "body": (
+                f"{COMMENT_MARKER}\n"
+                f"<!-- stat701-ai-review-complete:{old_blob} -->\n"
+                "## Automated title and abstract review\n\n"
+                "**Advisory status:** ✅ Looks good"
+            ),
+            "user": ACTIONS_BOT_USER,
+        }
+
+        def request_side_effect(**kwargs: object) -> object:
+            if kwargs["method"] == "GET":
+                return [old_comment]
+            payload = kwargs["payload"]
+            assert isinstance(payload, dict)
+            return {
+                "id": 42,
+                "body": payload["body"],
+                "user": ACTIONS_BOT_USER,
+            }
+
+        with mock.patch(
+            "scripts.review_submission.github_request",
+            side_effect=request_side_effect,
+        ) as request:
+            record_review_attempt(
+                token="opaque-token",
+                repository="stat701/stat701.github.io",
+                pr_number=7,
+                blob_sha=new_blob,
+            )
+
+        patched_body = request.call_args_list[2].kwargs["payload"]["body"]
+        self.assertIn(old_blob, patched_body)
+        self.assertIn(new_blob, patched_body)
+        self.assertIn("maintainer should review", patched_body)
+        self.assertNotIn("Looks good", patched_body)
+
+    def test_unverified_attempt_write_fails_closed(self) -> None:
+        with mock.patch(
+            "scripts.review_submission.github_request",
+            side_effect=[[], [], {}],
+        ):
+            with self.assertRaisesRegex(GitHubAPIError, "review attempt"):
+                record_review_attempt(
+                    token="opaque-token",
+                    repository="stat701/stat701.github.io",
+                    pr_number=7,
+                    blob_sha="f" * 40,
+                )
 
     def test_upsert_preserves_successful_blob_history(self) -> None:
         first_blob = "a" * 40
@@ -414,7 +621,7 @@ class CommentFormattingTests(unittest.TestCase):
                     f"<!-- stat701-ai-review-complete:{first_blob} -->\n"
                     "Earlier review"
                 ),
-                "user": {"login": "github-actions[bot]"},
+                "user": ACTIONS_BOT_USER,
             }
         ]
         result = ReviewResult(
@@ -452,6 +659,9 @@ class ReviewDeduplicationTests(unittest.TestCase):
             base_sha="a" * 40,
             head_repository="speaker/stat701.github.io",
             head_sha="b" * 40,
+            author_id=24680,
+            author_login="ada-student",
+            author_type="User",
         )
 
     @staticmethod
@@ -461,6 +671,10 @@ class ReviewDeduplicationTests(unittest.TestCase):
             record_id="fall-2026-01",
             blob_sha=blob_sha,
         )
+
+    @staticmethod
+    def _owner(*, user_id: int = 24680, login: str = "ada-student") -> mock.Mock:
+        return mock.Mock(github_user_id=user_id, github_login=login)
 
     def test_identical_blob_skips_openai_before_spending_credits(self) -> None:
         pull_request = self._pull_request()
@@ -476,9 +690,14 @@ class ReviewDeduplicationTests(unittest.TestCase):
             "scripts.review_submission.fetch_file_blob",
             side_effect=[BASE_TALK.encode(), HEAD_TALK.encode()],
         ), mock.patch(
-            "scripts.review_submission.review_already_completed",
+            "scripts.review_submission._load_owner",
+            return_value=self._owner(),
+        ), mock.patch(
+            "scripts.review_submission.review_already_attempted",
             return_value=True,
         ), mock.patch(
+            "scripts.review_submission.record_review_attempt"
+        ) as record_attempt, mock.patch(
             "scripts.review_submission.request_openai_review"
         ) as openai_review:
             with self.assertRaises(AlreadyReviewed):
@@ -492,6 +711,7 @@ class ReviewDeduplicationTests(unittest.TestCase):
                 )
 
         openai_review.assert_not_called()
+        record_attempt.assert_not_called()
 
     def test_new_blob_calls_openai_and_returns_completion_identity(self) -> None:
         pull_request = self._pull_request()
@@ -506,7 +726,7 @@ class ReviewDeduplicationTests(unittest.TestCase):
 
         with mock.patch(
             "scripts.review_submission.fetch_pull_request",
-            side_effect=[pull_request, pull_request, pull_request],
+            side_effect=[pull_request, pull_request, pull_request, pull_request],
         ), mock.patch(
             "scripts.review_submission.fetch_submission_file",
             return_value=submission,
@@ -514,9 +734,14 @@ class ReviewDeduplicationTests(unittest.TestCase):
             "scripts.review_submission.fetch_file_blob",
             side_effect=[BASE_TALK.encode(), HEAD_TALK.encode()],
         ), mock.patch(
-            "scripts.review_submission.review_already_completed",
+            "scripts.review_submission._load_owner",
+            return_value=self._owner(),
+        ), mock.patch(
+            "scripts.review_submission.review_already_attempted",
             return_value=False,
         ), mock.patch(
+            "scripts.review_submission.record_review_attempt"
+        ) as record_attempt, mock.patch(
             "scripts.review_submission.request_openai_review",
             return_value=result,
         ) as openai_review:
@@ -532,6 +757,12 @@ class ReviewDeduplicationTests(unittest.TestCase):
 
         self.assertEqual(returned, (result, True, "b" * 40, "d" * 40))
         openai_review.assert_called_once()
+        record_attempt.assert_called_once_with(
+            token="opaque-token",
+            repository="stat701/stat701.github.io",
+            pr_number=7,
+            blob_sha="d" * 40,
+        )
 
     def test_automatic_non_metadata_run_skips_cleanly(self) -> None:
         with mock.patch(
@@ -553,6 +784,356 @@ class ReviewDeduplicationTests(unittest.TestCase):
         self.assertEqual(return_code, 0)
         self.assertEqual(run.call_args.kwargs["expected_head_sha"], "d" * 40)
 
+    def test_first_unregistered_submission_skips_without_openai(self) -> None:
+        pull_request = self._pull_request()
+        submission = self._submission()
+
+        with mock.patch(
+            "scripts.review_submission.fetch_pull_request",
+            return_value=pull_request,
+        ), mock.patch(
+            "scripts.review_submission.fetch_submission_file",
+            return_value=submission,
+        ), mock.patch(
+            "scripts.review_submission._load_owner",
+            return_value=None,
+        ), mock.patch(
+            "scripts.review_submission.fetch_file_blob"
+        ) as fetch_blob, mock.patch(
+            "scripts.review_submission.request_openai_review"
+        ) as openai_review:
+            with self.assertRaises(UnregisteredStudent):
+                run_review(
+                    token="opaque-token",
+                    openai_api_key="opaque-key",
+                    repository="stat701/stat701.github.io",
+                    pr_number=7,
+                    default_branch="main",
+                    model="gpt-5.6-terra",
+                )
+
+        fetch_blob.assert_not_called()
+        openai_review.assert_not_called()
+
+        with mock.patch(
+            "scripts.review_submission.run_review",
+            side_effect=UnregisteredStudent("Instructor registration is required."),
+        ), redirect_stdout(StringIO()):
+            return_code = review_main(
+                [
+                    "--repository",
+                    "stat701/stat701.github.io",
+                    "--pr-number",
+                    "7",
+                    "--skip-non-metadata",
+                ]
+            )
+        self.assertEqual(return_code, 0)
+
+    def test_wrong_numeric_owner_stops_before_content_or_openai(self) -> None:
+        pull_request = self._pull_request()
+
+        with mock.patch(
+            "scripts.review_submission.fetch_pull_request",
+            return_value=pull_request,
+        ), mock.patch(
+            "scripts.review_submission.fetch_submission_file",
+            return_value=self._submission(),
+        ), mock.patch(
+            "scripts.review_submission._load_owner",
+            return_value=self._owner(user_id=99999),
+        ), mock.patch(
+            "scripts.review_submission.fetch_file_blob"
+        ) as fetch_blob, mock.patch(
+            "scripts.review_submission.request_openai_review"
+        ) as openai_review:
+            with self.assertRaisesRegex(EligibilityError, "does not own"):
+                run_review(
+                    token="opaque-token",
+                    openai_api_key="opaque-key",
+                    repository="stat701/stat701.github.io",
+                    pr_number=7,
+                    default_branch="main",
+                    model="gpt-5.6-terra",
+                )
+
+        fetch_blob.assert_not_called()
+        openai_review.assert_not_called()
+
+    def test_registered_user_id_survives_username_rename(self) -> None:
+        renamed_pr = dataclasses.replace(
+            self._pull_request(), author_login="ada-renamed"
+        )
+        result = ReviewResult(
+            status="looks_good",
+            summary="The proposed talk is coherent and accessible.",
+            strengths=(),
+            revision_requests=(),
+            confidence="high",
+        )
+
+        with mock.patch(
+            "scripts.review_submission.fetch_pull_request",
+            side_effect=[renamed_pr, renamed_pr, renamed_pr, renamed_pr],
+        ), mock.patch(
+            "scripts.review_submission.fetch_submission_file",
+            return_value=self._submission("e" * 40),
+        ), mock.patch(
+            "scripts.review_submission._load_owner",
+            return_value=self._owner(login="ada-student"),
+        ), mock.patch(
+            "scripts.review_submission.fetch_file_blob",
+            side_effect=[BASE_TALK.encode(), HEAD_TALK.encode()],
+        ), mock.patch(
+            "scripts.review_submission.review_already_attempted",
+            return_value=False,
+        ), mock.patch(
+            "scripts.review_submission.record_review_attempt"
+        ), mock.patch(
+            "scripts.review_submission.request_openai_review",
+            return_value=result,
+        ) as openai_review, redirect_stdout(StringIO()) as output:
+            returned = run_review(
+                token="opaque-token",
+                openai_api_key="opaque-key",
+                repository="stat701/stat701.github.io",
+                pr_number=7,
+                default_branch="main",
+                model="gpt-5.6-terra",
+            )
+
+        self.assertTrue(returned[1])
+        openai_review.assert_called_once()
+        self.assertIn("is now @ada-renamed", output.getvalue())
+
+    def test_force_push_after_attempt_claim_stops_before_openai(self) -> None:
+        pull_request = self._pull_request()
+        changed = dataclasses.replace(pull_request, head_sha="f" * 40)
+
+        with mock.patch(
+            "scripts.review_submission.fetch_pull_request",
+            side_effect=[pull_request, pull_request, changed],
+        ), mock.patch(
+            "scripts.review_submission.fetch_submission_file",
+            return_value=self._submission("e" * 40),
+        ), mock.patch(
+            "scripts.review_submission._load_owner",
+            return_value=self._owner(),
+        ), mock.patch(
+            "scripts.review_submission.fetch_file_blob",
+            side_effect=[BASE_TALK.encode(), HEAD_TALK.encode()],
+        ), mock.patch(
+            "scripts.review_submission.review_already_attempted",
+            return_value=False,
+        ), mock.patch(
+            "scripts.review_submission.record_review_attempt"
+        ) as record_attempt, mock.patch(
+            "scripts.review_submission.request_openai_review"
+        ) as openai_review:
+            with self.assertRaisesRegex(EligibilityError, "attempt was recorded"):
+                run_review(
+                    token="opaque-token",
+                    openai_api_key="opaque-key",
+                    repository="stat701/stat701.github.io",
+                    pr_number=7,
+                    default_branch="main",
+                    model="gpt-5.6-terra",
+                )
+
+        record_attempt.assert_called_once()
+        openai_review.assert_not_called()
+
+    def test_manual_registration_is_written_before_openai_failure(self) -> None:
+        pull_request = self._pull_request()
+        events: list[str] = []
+        registration = mock.Mock(owner=self._owner(), created=True)
+
+        def register(**_: object) -> mock.Mock:
+            events.append("register")
+            return registration
+
+        def record(**_: object) -> None:
+            events.append("attempt")
+
+        def fail_openai(**_: object) -> ReviewResult:
+            events.append("openai")
+            raise OpenAIReviewError("provider unavailable")
+
+        with mock.patch(
+            "scripts.review_submission.fetch_pull_request",
+            side_effect=[
+                pull_request,
+                pull_request,
+                pull_request,
+                pull_request,
+                pull_request,
+            ],
+        ), mock.patch(
+            "scripts.review_submission.fetch_submission_file",
+            return_value=self._submission("f" * 40),
+        ), mock.patch(
+            "scripts.review_submission.fetch_file_blob",
+            side_effect=[BASE_TALK.encode(), HEAD_TALK.encode()],
+        ), mock.patch(
+            "scripts.review_submission.submission_registry.is_authorized_registrar",
+            return_value=True,
+        ), mock.patch(
+            "scripts.review_submission.submission_registry.register_owner",
+            side_effect=register,
+        ) as register_owner, mock.patch(
+            "scripts.review_submission.review_already_attempted",
+            return_value=False,
+        ), mock.patch(
+            "scripts.review_submission.record_review_attempt",
+            side_effect=record,
+        ), mock.patch(
+            "scripts.review_submission.request_openai_review",
+            side_effect=fail_openai,
+        ):
+            result, succeeded, _, _ = run_review(
+                token="opaque-token",
+                openai_api_key="opaque-key",
+                repository="stat701/stat701.github.io",
+                pr_number=7,
+                default_branch="main",
+                model="gpt-5.6-terra",
+                register_owner=True,
+                registrar_id=12053767,
+                registrar_login="instructor-renamed",
+                registrar_type="User",
+                workflow_run_id=87654,
+            )
+
+        self.assertEqual(events, ["register", "attempt", "openai"])
+        self.assertFalse(succeeded)
+        self.assertEqual(result.status, "human_review")
+        self.assertEqual(
+            register_owner.call_args.kwargs["github_user_id"],
+            pull_request.author_id,
+        )
+
+    def test_manual_registration_rejects_instructor_as_student(self) -> None:
+        pull_request = dataclasses.replace(
+            self._pull_request(),
+            author_id=12053767,
+            author_login="volfovsky",
+        )
+
+        with mock.patch(
+            "scripts.review_submission.fetch_pull_request",
+            side_effect=[pull_request, pull_request],
+        ), mock.patch(
+            "scripts.review_submission.fetch_submission_file",
+            return_value=self._submission(),
+        ), mock.patch(
+            "scripts.review_submission.fetch_file_blob",
+            side_effect=[BASE_TALK.encode(), HEAD_TALK.encode()],
+        ), mock.patch(
+            "scripts.review_submission.submission_registry.is_authorized_registrar",
+            return_value=True,
+        ), mock.patch(
+            "scripts.review_submission.submission_registry.register_owner"
+        ) as register_owner, mock.patch(
+            "scripts.review_submission.request_openai_review"
+        ) as openai_review:
+            with self.assertRaisesRegex(EligibilityError, "cannot be registered"):
+                run_review(
+                    token="opaque-token",
+                    openai_api_key="opaque-key",
+                    repository="stat701/stat701.github.io",
+                    pr_number=7,
+                    default_branch="main",
+                    model="gpt-5.6-terra",
+                    register_owner=True,
+                    registrar_id=12053767,
+                    registrar_login="volfovsky",
+                    registrar_type="User",
+                    workflow_run_id=87654,
+                )
+
+        register_owner.assert_not_called()
+        openai_review.assert_not_called()
+
+    def test_manual_registration_cannot_bypass_published_metadata_lock(self) -> None:
+        same_repository_student = dataclasses.replace(
+            self._pull_request(),
+            head_repository="stat701/stat701.github.io",
+        )
+        corrected_head = HEAD_TALK.replace(
+            "A Statistical Idea Worth Explaining",
+            "A Revised Statistical Idea Worth Explaining",
+        )
+
+        with mock.patch(
+            "scripts.review_submission.fetch_pull_request",
+            return_value=same_repository_student,
+        ), mock.patch(
+            "scripts.review_submission.fetch_submission_file",
+            return_value=self._submission(),
+        ), mock.patch(
+            "scripts.review_submission.fetch_file_blob",
+            side_effect=[HEAD_TALK.encode(), corrected_head.encode()],
+        ), mock.patch(
+            "scripts.review_submission.submission_registry.is_authorized_registrar",
+            return_value=False,
+        ), mock.patch(
+            "scripts.review_submission.submission_registry.register_owner"
+        ) as register_owner, mock.patch(
+            "scripts.review_submission.request_openai_review"
+        ) as openai_review:
+            with self.assertRaisesRegex(EligibilityError, "deterministic validation"):
+                run_review(
+                    token="opaque-token",
+                    openai_api_key="opaque-key",
+                    repository="stat701/stat701.github.io",
+                    pr_number=7,
+                    default_branch="main",
+                    model="gpt-5.6-terra",
+                    register_owner=True,
+                    registrar_id=12053767,
+                    registrar_login="volfovsky",
+                    registrar_type="User",
+                    workflow_run_id=87654,
+                )
+
+        register_owner.assert_not_called()
+        openai_review.assert_not_called()
+
+    def test_same_repository_maintainer_correction_skips_student_ai(self) -> None:
+        maintainer_pr = dataclasses.replace(
+            self._pull_request(),
+            head_repository="stat701/stat701.github.io",
+            author_id=12053767,
+            author_login="instructor-renamed",
+        )
+
+        with mock.patch(
+            "scripts.review_submission.fetch_pull_request",
+            return_value=maintainer_pr,
+        ), mock.patch(
+            "scripts.review_submission.fetch_submission_file",
+            return_value=self._submission(),
+        ), mock.patch(
+            "scripts.review_submission.submission_registry.is_authorized_registrar",
+            return_value=True,
+        ), mock.patch(
+            "scripts.review_submission._load_owner"
+        ) as load_owner, mock.patch(
+            "scripts.review_submission.request_openai_review"
+        ) as openai_review:
+            with self.assertRaises(MaintainerSubmission):
+                run_review(
+                    token="opaque-token",
+                    openai_api_key="opaque-key",
+                    repository="stat701/stat701.github.io",
+                    pr_number=7,
+                    default_branch="main",
+                    model="gpt-5.6-terra",
+                )
+
+        load_owner.assert_not_called()
+        openai_review.assert_not_called()
+
     def test_expected_head_mismatch_stops_before_reading_submission(self) -> None:
         pull_request = PullRequestInfo(
             number=10,
@@ -561,6 +1142,9 @@ class ReviewDeduplicationTests(unittest.TestCase):
             base_sha="a" * 40,
             head_repository="speaker/stat701.github.io",
             head_sha="b" * 40,
+            author_id=24680,
+            author_login="ada-student",
+            author_type="User",
         )
 
         with mock.patch(
@@ -590,6 +1174,9 @@ class ReviewDeduplicationTests(unittest.TestCase):
             base_sha="d" * 40,
             head_repository="speaker/stat701.github.io",
             head_sha="e" * 40,
+            author_id=24680,
+            author_login="ada-student",
+            author_type="User",
         )
         submission = SubmissionFile(
             path="_talks/fall-2026-01.md",
@@ -607,6 +1194,9 @@ class ReviewDeduplicationTests(unittest.TestCase):
         ), mock.patch(
             "scripts.review_submission.fetch_submission_file",
             return_value=submission,
+        ), mock.patch(
+            "scripts.review_submission._load_owner",
+            return_value=self._owner(),
         ), mock.patch(
             "scripts.review_submission.fetch_file_blob",
             side_effect=[HEAD_TALK.encode(), corrected_head.encode()],

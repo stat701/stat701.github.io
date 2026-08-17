@@ -58,7 +58,10 @@ MIN_ABSTRACT_WORDS = 12
 MAX_ABSTRACT_CHARACTERS = 5_000
 MAX_METADATA_BYTES = 32 * 1024
 MIN_PDF_BYTES = 1_024
-MAX_PDF_BYTES = 50 * 1024 * 1024
+# Match GitHub's 25 MiB browser-upload limit so the documented browser-only
+# submission workflow cannot produce a deck that GitHub refuses to upload.
+# This also remains comfortably below OpenAI's 50,000,000-byte file limit.
+MAX_PDF_BYTES = 25 * 1024 * 1024
 
 
 class ValidationError(Exception):

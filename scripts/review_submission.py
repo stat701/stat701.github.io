@@ -7,6 +7,12 @@ at the immutable base and head commit SHAs, applies the repository's
 deterministic metadata validator, and only then sends the immutable year in
 program and the normalized title and abstract to the OpenAI Responses API.
 
+The first review is manually dispatched: it durably binds the scheduled
+record to the pull-request author's stable numeric GitHub user ID before any
+OpenAI request. Later revisions review automatically only for that ID. An
+Actions-bot-authored marker is persisted before each exact Git blob is sent so
+an interruption or provider failure cannot cause a duplicate model request.
+
 No pull-request code is checked out or executed.  The model's result is
 advisory: this script only creates or updates a pull-request comment and never
 approves or merges a pull request.
@@ -32,12 +38,14 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 try:
+    from . import submission_registry
     from .validate_submission import (
         MAX_METADATA_BYTES,
         ValidationError,
         validate_talk_document,
     )
 except ImportError:  # Direct execution: ``python scripts/review_submission.py``.
+    import submission_registry  # type: ignore[no-redef]
     from validate_submission import (  # type: ignore[no-redef]
         MAX_METADATA_BYTES,
         ValidationError,
@@ -48,7 +56,12 @@ except ImportError:  # Direct execution: ``python scripts/review_submission.py``
 GITHUB_API_ROOT = "https://api.github.com"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 DEFAULT_MODEL = "gpt-5.6-terra"
+ACTIONS_BOT_ID = 41_898_282
 COMMENT_MARKER = "<!-- stat701-ai-review -->"
+ATTEMPT_MARKER_RE = re.compile(
+    r"(?m)^<!-- stat701-ai-review-attempted:"
+    r"(?P<blob_sha>[0-9a-f]{40}|[0-9a-f]{64}) -->$"
+)
 COMPLETION_MARKER_RE = re.compile(
     r"(?m)^<!-- stat701-ai-review-complete:"
     r"(?P<blob_sha>[0-9a-f]{40}|[0-9a-f]{64}) -->$"
@@ -60,6 +73,7 @@ REPOSITORY_RE = re.compile(
 )
 SHA_RE = re.compile(r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 MODEL_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+LOGIN_RE = re.compile(r"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\Z")
 TALK_PATH_RE = re.compile(
     r"\A_talks/(?P<record_id>fall-2026-(?:0[1-9]|1[0-6]))\.md\Z"
 )
@@ -170,8 +184,16 @@ class NotMetadataSubmission(EligibilityError):
     """The pull request is a PDF or ordinary maintainer change, not metadata."""
 
 
+class UnregisteredStudent(EligibilityError):
+    """The scheduled record has not yet been bound to a GitHub account."""
+
+
+class MaintainerSubmission(EligibilityError):
+    """An authorized maintainer edit must not be reviewed as a student submission."""
+
+
 class AlreadyReviewed(ReviewError):
-    """This exact metadata blob already received a successful AI review."""
+    """This exact metadata blob already started an AI review."""
 
 
 class OpenAIReviewError(ReviewError):
@@ -190,6 +212,9 @@ class PullRequestInfo:
     base_sha: str
     head_repository: str
     head_sha: str
+    author_id: int
+    author_login: str
+    author_type: str
 
 
 @dataclasses.dataclass(frozen=True)
@@ -219,6 +244,13 @@ def parse_pr_number(value: str | int) -> int:
     text = str(value)
     if not re.fullmatch(r"[1-9][0-9]{0,7}", text):
         raise EligibilityError("The pull-request number must be a positive integer.")
+    return int(text)
+
+
+def parse_positive_id(value: str | int, *, label: str) -> int:
+    text = str(value)
+    if not re.fullmatch(r"[1-9][0-9]{0,19}", text):
+        raise EligibilityError(f"The {label} must be a positive numeric ID.")
     return int(text)
 
 
@@ -340,12 +372,16 @@ def fetch_pull_request(
     base_repo = _require_mapping(base.get("repo"), "base repository")
     head = _require_mapping(payload.get("head"), "head branch")
     head_repo = _require_mapping(head.get("repo"), "head repository")
+    author = _require_mapping(payload.get("user"), "pull-request author")
 
     base_repository = base_repo.get("full_name")
     base_branch = base.get("ref")
     base_sha = base.get("sha")
     head_repository = head_repo.get("full_name")
     head_sha = head.get("sha")
+    author_id = author.get("id")
+    author_login = author.get("login")
+    author_type = author.get("type")
 
     if base_repository != repository:
         raise EligibilityError("The pull request targets a different repository.")
@@ -361,6 +397,12 @@ def fetch_pull_request(
         head_repository
     ):
         raise EligibilityError("The pull-request head repository is unavailable.")
+    if isinstance(author_id, bool) or not isinstance(author_id, int) or author_id <= 0:
+        raise GitHubAPIError("GitHub returned an invalid pull-request author ID.")
+    if author_type != "User":
+        raise EligibilityError("Only an individual GitHub user can own a seminar record.")
+    if not isinstance(author_login, str) or not LOGIN_RE.fullmatch(author_login):
+        raise GitHubAPIError("GitHub returned an invalid pull-request author login.")
 
     return PullRequestInfo(
         number=pr_number,
@@ -369,6 +411,9 @@ def fetch_pull_request(
         base_sha=base_sha,
         head_repository=head_repository,
         head_sha=head_sha,
+        author_id=author_id,
+        author_login=author_login,
+        author_type=author_type,
     )
 
 
@@ -777,13 +822,22 @@ def format_review_comment(
     return "\n".join(lines)
 
 
+def _is_actions_bot_comment(comment: Mapping[str, Any]) -> bool:
+    user = comment.get("user")
+    return bool(
+        isinstance(user, Mapping)
+        and user.get("id") == ACTIONS_BOT_ID
+        and user.get("login") == "github-actions[bot]"
+        and user.get("type") == "Bot"
+    )
+
+
 def _bot_marker_comments(comments: Sequence[Any]) -> list[int]:
     matching: list[int] = []
     for comment in comments:
         if not isinstance(comment, Mapping):
             continue
-        user = comment.get("user")
-        if not isinstance(user, Mapping) or user.get("login") != "github-actions[bot]":
+        if not _is_actions_bot_comment(comment):
             continue
         body = comment.get("body")
         comment_id = comment.get("id")
@@ -804,8 +858,7 @@ def _bot_completed_blob_shas(comments: Sequence[Any]) -> set[str]:
     for comment in comments:
         if not isinstance(comment, Mapping):
             continue
-        user = comment.get("user")
-        if not isinstance(user, Mapping) or user.get("login") != "github-actions[bot]":
+        if not _is_actions_bot_comment(comment):
             continue
         body = comment.get("body")
         if not isinstance(body, str):
@@ -814,6 +867,22 @@ def _bot_completed_blob_shas(comments: Sequence[Any]) -> set[str]:
             match.group("blob_sha") for match in COMPLETION_MARKER_RE.finditer(body)
         )
     return completed
+
+
+def _bot_attempted_blob_shas(comments: Sequence[Any]) -> set[str]:
+    """Read immutable attempt markers only from the verified Actions bot."""
+
+    attempted: set[str] = set()
+    for comment in comments:
+        if not isinstance(comment, Mapping) or not _is_actions_bot_comment(comment):
+            continue
+        body = comment.get("body")
+        if not isinstance(body, str):
+            continue
+        attempted.update(
+            match.group("blob_sha") for match in ATTEMPT_MARKER_RE.finditer(body)
+        )
+    return attempted
 
 
 def _list_issue_comments(
@@ -837,32 +906,148 @@ def _list_issue_comments(
     raise GitHubAPIError("The pull request has too many comments to update safely.")
 
 
-def review_already_completed(
+def _list_repository_issue_comments(
+    *, token: str, repository: str
+) -> list[Any]:
+    """Read repository-wide bot markers so a blob cannot be retried in a new PR."""
+
+    repo_path = _repository_api_path(repository)
+    collected: list[Any] = []
+    for page in range(1, 51):
+        comments = github_request(
+            token=token,
+            method="GET",
+            endpoint=f"/{repo_path}/issues/comments?per_page=100&page={page}",
+        )
+        if not isinstance(comments, list):
+            raise GitHubAPIError("GitHub returned invalid repository comments.")
+        collected.extend(comments)
+        if len(comments) < 100:
+            return collected
+    raise GitHubAPIError("The repository has too many comments to scan safely.")
+
+
+def review_already_attempted(
     *, token: str, repository: str, pr_number: int, blob_sha: str
 ) -> bool:
     if not SHA_RE.fullmatch(blob_sha):
         raise GitHubAPIError("Refusing an invalid reviewed blob SHA.")
-    comments = _list_issue_comments(
-        token=token, repository=repository, pr_number=pr_number
+    parse_pr_number(pr_number)
+    # The immutable-blob claim is repository-wide, not PR-local.
+    comments = _list_repository_issue_comments(token=token, repository=repository)
+    return bool(
+        blob_sha in _bot_attempted_blob_shas(comments)
+        or blob_sha in _bot_completed_blob_shas(comments)
     )
-    return blob_sha in _bot_completed_blob_shas(comments)
 
 
-def _preserve_completion_markers(body: str, blob_shas: set[str]) -> str:
-    """Keep a hidden per-blob review history while showing one current review."""
+def _preserve_review_markers(
+    body: str, *, attempted_blob_shas: set[str], completed_blob_shas: set[str]
+) -> str:
+    """Keep hidden per-blob attempt and completion histories."""
 
     lines = [
         line
         for line in body.splitlines()
-        if COMPLETION_MARKER_RE.fullmatch(line) is None
+        if ATTEMPT_MARKER_RE.fullmatch(line) is None
+        and COMPLETION_MARKER_RE.fullmatch(line) is None
     ]
     if not lines or lines[0] != COMMENT_MARKER:
         raise GitHubAPIError("Refusing to post a malformed AI review comment.")
-    markers = [
-        f"<!-- stat701-ai-review-complete:{blob_sha} -->"
-        for blob_sha in sorted(blob_shas)
+    attempt_markers = [
+        f"<!-- stat701-ai-review-attempted:{blob_sha} -->"
+        for blob_sha in sorted(attempted_blob_shas)
     ]
-    return "\n".join((lines[0], *markers, *lines[1:]))
+    completion_markers = [
+        f"<!-- stat701-ai-review-complete:{blob_sha} -->"
+        for blob_sha in sorted(completed_blob_shas)
+    ]
+    return "\n".join(
+        (lines[0], *attempt_markers, *completion_markers, *lines[1:])
+    )
+
+
+def _require_persisted_attempt(response: Any, *, expected_body: str) -> None:
+    if not isinstance(response, Mapping):
+        raise GitHubAPIError("GitHub did not return the recorded review attempt.")
+    if not _is_actions_bot_comment(response):
+        raise GitHubAPIError(
+            "GitHub did not attribute the review attempt to the trusted Actions bot."
+        )
+    if response.get("body") != expected_body:
+        raise GitHubAPIError("GitHub returned a different review-attempt marker.")
+
+
+def record_review_attempt(
+    *, token: str, repository: str, pr_number: int, blob_sha: str
+) -> None:
+    """Persist an exact-blob attempt before any OpenAI request is made."""
+
+    if not SHA_RE.fullmatch(blob_sha):
+        raise GitHubAPIError("Refusing an invalid attempted blob SHA.")
+    repo_path = _repository_api_path(repository)
+    repository_comments = _list_repository_issue_comments(
+        token=token, repository=repository
+    )
+    repository_attempted = _bot_attempted_blob_shas(repository_comments)
+    repository_completed = _bot_completed_blob_shas(repository_comments)
+    if blob_sha in repository_attempted or blob_sha in repository_completed:
+        raise AlreadyReviewed(
+            "This exact title-and-abstract file version already started a review."
+        )
+
+    comments = _list_issue_comments(
+        token=token, repository=repository, pr_number=pr_number
+    )
+    marker_comment_ids = _bot_marker_comments(comments)
+    attempted_blob_shas = _bot_attempted_blob_shas(comments)
+    completed_blob_shas = _bot_completed_blob_shas(comments)
+    attempted_blob_shas.add(blob_sha)
+    pending_body = "\n".join(
+        (
+            COMMENT_MARKER,
+            "## Automated title and abstract review",
+            "",
+            "The automated review has started for this exact file version. If no "
+            "final review appears, a maintainer should review it manually.",
+        )
+    )
+
+    if marker_comment_ids:
+        primary_id = marker_comment_ids[0]
+        existing = next(
+            comment
+            for comment in comments
+            if isinstance(comment, Mapping) and comment.get("id") == primary_id
+        )
+        if not isinstance(existing.get("body"), str):
+            raise GitHubAPIError("The existing AI review comment was malformed.")
+        body = _preserve_review_markers(
+            pending_body,
+            attempted_blob_shas=attempted_blob_shas,
+            completed_blob_shas=completed_blob_shas,
+        )
+        response = github_request(
+            token=token,
+            method="PATCH",
+            endpoint=f"/{repo_path}/issues/comments/{primary_id}",
+            payload={"body": body},
+        )
+        _require_persisted_attempt(response, expected_body=body)
+        return
+
+    body = _preserve_review_markers(
+        pending_body,
+        attempted_blob_shas=attempted_blob_shas,
+        completed_blob_shas=completed_blob_shas,
+    )
+    response = github_request(
+        token=token,
+        method="POST",
+        endpoint=f"/{repo_path}/issues/{pr_number}/comments",
+        payload={"body": body},
+    )
+    _require_persisted_attempt(response, expected_body=body)
 
 
 def upsert_review_comment(
@@ -875,11 +1060,19 @@ def upsert_review_comment(
         token=token, repository=repository, pr_number=pr_number
     )
     marker_comment_ids = _bot_marker_comments(comments)
+    attempted_blob_shas = _bot_attempted_blob_shas(comments)
     completed_blob_shas = _bot_completed_blob_shas(comments)
+    attempted_blob_shas.update(
+        match.group("blob_sha") for match in ATTEMPT_MARKER_RE.finditer(body)
+    )
     completed_blob_shas.update(
         match.group("blob_sha") for match in COMPLETION_MARKER_RE.finditer(body)
     )
-    body = _preserve_completion_markers(body, completed_blob_shas)
+    body = _preserve_review_markers(
+        body,
+        attempted_blob_shas=attempted_blob_shas,
+        completed_blob_shas=completed_blob_shas,
+    )
     if not marker_comment_ids:
         github_request(
             token=token,
@@ -917,6 +1110,83 @@ def _fallback_human_review() -> ReviewResult:
     )
 
 
+def _same_pull_request_version(
+    first: PullRequestInfo, second: PullRequestInfo
+) -> bool:
+    """Compare immutable content identity while allowing a login rename."""
+
+    return bool(
+        second.number == first.number
+        and second.base_repository == first.base_repository
+        and second.base_branch == first.base_branch
+        and second.base_sha == first.base_sha
+        and second.head_repository == first.head_repository
+        and second.head_sha == first.head_sha
+        and second.author_id == first.author_id
+        and second.author_type == first.author_type
+    )
+
+
+def _load_owner(
+    *, token: str, repository: str, record_id: str
+) -> Any | None:
+    try:
+        registry = submission_registry.load_registry(
+            token=token,
+            repository=repository,
+        )
+        return submission_registry.resolve_owner(registry, record_id)
+    except submission_registry.RegistryError as error:
+        raise EligibilityError(
+            "The trusted student registration ledger could not be verified."
+        ) from error
+
+
+def _owner_identity(owner: Any) -> tuple[int, str]:
+    user_id = getattr(owner, "github_user_id", None)
+    login = getattr(owner, "github_login", None)
+    if (
+        isinstance(user_id, bool)
+        or not isinstance(user_id, int)
+        or user_id <= 0
+        or not isinstance(login, str)
+        or not LOGIN_RE.fullmatch(login)
+    ):
+        raise EligibilityError("The registered student identity is malformed.")
+    return user_id, login
+
+
+def _require_registered_author(
+    *, owner: Any | None, pull_request: PullRequestInfo, record_id: str
+) -> None:
+    if owner is None:
+        raise UnregisteredStudent(
+            f"{record_id} needs instructor registration before automatic AI review."
+        )
+    owner_id, registered_login = _owner_identity(owner)
+    if owner_id != pull_request.author_id:
+        raise EligibilityError(
+            "The pull-request author does not own this scheduled seminar record."
+        )
+    if registered_login != pull_request.author_login:
+        print(
+            "Registration audit: GitHub user ID "
+            f"{owner_id} is now @{pull_request.author_login} "
+            f"(registered as @{registered_login})."
+        )
+
+
+def _is_authorized_maintainer(pull_request: PullRequestInfo) -> bool:
+    return bool(
+        pull_request.head_repository == pull_request.base_repository
+        and submission_registry.is_authorized_registrar(
+            user_id=pull_request.author_id,
+            login=pull_request.author_login,
+            user_type=pull_request.author_type,
+        )
+    )
+
+
 def run_review(
     *,
     token: str,
@@ -926,6 +1196,11 @@ def run_review(
     default_branch: str,
     model: str,
     expected_head_sha: str | None = None,
+    register_owner: bool = False,
+    registrar_id: int | None = None,
+    registrar_login: str | None = None,
+    registrar_type: str | None = None,
+    workflow_run_id: int | None = None,
 ) -> tuple[ReviewResult, bool, str, str]:
     """Return result, success flag, head SHA, and reviewed blob SHA for one PR."""
 
@@ -945,6 +1220,23 @@ def run_review(
     submission = fetch_submission_file(
         token=token, repository=repository, pr_number=pr_number
     )
+
+    if not register_owner:
+        if _is_authorized_maintainer(initial_pr):
+            raise MaintainerSubmission(
+                "An authorized maintainer correction is not a student AI-review event."
+            )
+        owner = _load_owner(
+            token=token,
+            repository=repository,
+            record_id=submission.record_id,
+        )
+        _require_registered_author(
+            owner=owner,
+            pull_request=initial_pr,
+            record_id=submission.record_id,
+        )
+
     base_data = fetch_file_blob(
         token=token,
         repository=initial_pr.base_repository,
@@ -964,14 +1256,17 @@ def run_review(
             base_text=decode_metadata(base_data),
             head_text=decode_metadata(head_data),
             expected_record_id=submission.record_id,
-            allow_completed_base=(
-                initial_pr.head_repository == initial_pr.base_repository
-            ),
+            allow_completed_base=_is_authorized_maintainer(initial_pr),
         )
     except ValidationError as error:
         raise EligibilityError(
             "The metadata must pass deterministic validation before AI review."
         ) from error
+    year_in_program_text = talk.fields.get("year_in_program")
+    if year_in_program_text not in {"3", "4", "5"}:
+        raise EligibilityError(
+            "The scheduled year in program is not supported for AI review."
+        )
 
     # Detect force-pushes or base updates before spending API credits or posting
     # a comment about stale content.
@@ -981,29 +1276,100 @@ def run_review(
         pr_number=pr_number,
         default_branch=default_branch,
     )
-    if (
-        current_pr.base_sha != initial_pr.base_sha
-        or current_pr.head_sha != initial_pr.head_sha
-        or current_pr.head_repository != initial_pr.head_repository
-    ):
+    if not _same_pull_request_version(initial_pr, current_pr):
         raise EligibilityError("The pull request changed while it was being reviewed.")
 
-    if review_already_completed(
+    if register_owner:
+        if registrar_id is None or workflow_run_id is None:
+            raise EligibilityError(
+                "Manual registration requires the registrar and workflow run IDs."
+            )
+        if registrar_login is None or not LOGIN_RE.fullmatch(registrar_login):
+            raise EligibilityError("Manual registration requires a valid registrar login.")
+        if registrar_type != "User":
+            raise EligibilityError("Manual registration requires an individual registrar.")
+        if not submission_registry.is_authorized_registrar(
+            user_id=registrar_id,
+            login=registrar_login,
+            user_type=registrar_type,
+        ):
+            raise EligibilityError(
+                "Only the configured instructor account can register a student."
+            )
+        if initial_pr.author_id == registrar_id:
+            raise EligibilityError(
+                "The instructor account cannot be registered as a student owner."
+            )
+        try:
+            registration = submission_registry.register_owner(
+                token=token,
+                repository=repository,
+                record_id=submission.record_id,
+                github_user_id=initial_pr.author_id,
+                github_login=initial_pr.author_login,
+                github_user_type=initial_pr.author_type,
+                source_pr=pr_number,
+                source_head_sha=initial_pr.head_sha,
+                authorized_by_user_id=registrar_id,
+                authorized_by_login=registrar_login,
+                authorized_by_type=registrar_type,
+                workflow_run_id=workflow_run_id,
+            )
+        except submission_registry.RegistryError as error:
+            raise EligibilityError(str(error)) from error
+        _require_registered_author(
+            owner=registration.owner,
+            pull_request=initial_pr,
+            record_id=submission.record_id,
+        )
+
+        # Registration is durable even if a force-push follows. Never spend API
+        # credits on content other than the exact head recorded in the ledger.
+        registered_pr = fetch_pull_request(
+            token=token,
+            repository=repository,
+            pr_number=pr_number,
+            default_branch=default_branch,
+        )
+        if not _same_pull_request_version(initial_pr, registered_pr):
+            raise EligibilityError(
+                "The pull request changed after its student account was registered."
+            )
+
+    if review_already_attempted(
         token=token,
         repository=repository,
         pr_number=pr_number,
         blob_sha=submission.blob_sha,
     ):
         raise AlreadyReviewed(
-            "This exact title-and-abstract file version was already reviewed."
+            "This exact title-and-abstract file version already started a review."
+        )
+
+    # The marker is written before OpenAI. A retry after an API error, runner
+    # interruption, or workflow cancellation therefore cannot spend twice on
+    # this exact Git blob; the instructor handles that version manually.
+    record_review_attempt(
+        token=token,
+        repository=repository,
+        pr_number=pr_number,
+        blob_sha=submission.blob_sha,
+    )
+
+    # Claiming the blob requires a network write. Re-check once more after the
+    # claim so a force-push in that window cannot spend credits on a stale PR.
+    claimed_pr = fetch_pull_request(
+        token=token,
+        repository=repository,
+        pr_number=pr_number,
+        default_branch=default_branch,
+    )
+    if not _same_pull_request_version(initial_pr, claimed_pr):
+        raise EligibilityError(
+            "The pull request changed after its review attempt was recorded."
         )
 
     try:
-        year_in_program_text = talk.fields.get("year_in_program")
-        if year_in_program_text not in {"3", "4", "5"}:
-            raise EligibilityError(
-                "The scheduled year in program is not supported for AI review."
-            )
         result = request_openai_review(
             api_key=openai_api_key,
             model=model,
@@ -1025,11 +1391,7 @@ def run_review(
         pr_number=pr_number,
         default_branch=default_branch,
     )
-    if (
-        final_pr.base_sha != initial_pr.base_sha
-        or final_pr.head_sha != initial_pr.head_sha
-        or final_pr.head_repository != initial_pr.head_repository
-    ):
+    if not _same_pull_request_version(initial_pr, final_pr):
         raise EligibilityError("The pull request changed while it was being reviewed.")
     return result, ai_succeeded, initial_pr.head_sha, submission.blob_sha
 
@@ -1045,11 +1407,39 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--skip-non-metadata",
         action="store_true",
-        help="Exit successfully for an automatic PDF or ordinary maintainer PR",
+        help=(
+            "Exit successfully for an automatic PDF, unregistered first "
+            "submission, or authorized maintainer correction"
+        ),
     )
     parser.add_argument(
         "--expected-head-sha",
         help="Require the current PR head to match this validated commit SHA",
+    )
+    parser.add_argument(
+        "--register-owner",
+        action="store_true",
+        help="Register this metadata PR's author, then run the first AI review",
+    )
+    parser.add_argument(
+        "--registrar-id",
+        default=os.environ.get("GITHUB_ACTOR_ID"),
+        help="Stable numeric GitHub ID of the manual workflow dispatcher",
+    )
+    parser.add_argument(
+        "--registrar-login",
+        default=os.environ.get("GITHUB_ACTOR"),
+        help="Audit login of the manual workflow dispatcher",
+    )
+    parser.add_argument(
+        "--registrar-type",
+        default=os.environ.get("GITHUB_ACTOR_TYPE"),
+        help="GitHub account type of the manual workflow dispatcher",
+    )
+    parser.add_argument(
+        "--workflow-run-id",
+        default=os.environ.get("GITHUB_RUN_ID"),
+        help="Stable numeric ID of the registration workflow run",
     )
     return parser
 
@@ -1062,6 +1452,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         pr_number = parse_pr_number(args.pr_number)
         _repository_api_path(args.repository)
         model = validate_model(args.model)
+        registrar_id = (
+            parse_positive_id(args.registrar_id, label="registrar ID")
+            if args.register_owner
+            else None
+        )
+        workflow_run_id = (
+            parse_positive_id(args.workflow_run_id, label="workflow run ID")
+            if args.register_owner
+            else None
+        )
         result, ai_succeeded, reviewed_head_sha, reviewed_blob_sha = run_review(
             token=token,
             openai_api_key=api_key,
@@ -1070,6 +1470,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             default_branch=args.default_branch,
             model=model,
             expected_head_sha=args.expected_head_sha,
+            register_owner=args.register_owner,
+            registrar_id=registrar_id,
+            registrar_login=args.registrar_login if args.register_owner else None,
+            registrar_type=args.registrar_type if args.register_owner else None,
+            workflow_run_id=workflow_run_id,
         )
         upsert_review_comment(
             token=token,
@@ -1082,9 +1487,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
         )
     except AlreadyReviewed as error:
-        print(f"Already reviewed: {error}")
+        print(f"Already attempted: {error}")
         return 0
     except NotMetadataSubmission as error:
+        if args.skip_non_metadata:
+            print(f"Skipping automatic AI review: {error}")
+            return 0
+        print(f"::error::{error}", file=sys.stderr)
+        return 1
+    except (UnregisteredStudent, MaintainerSubmission) as error:
         if args.skip_non_metadata:
             print(f"Skipping automatic AI review: {error}")
             return 0

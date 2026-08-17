@@ -6,15 +6,10 @@ on:
       - Validate submission
     types:
       - completed
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: Open title-and-abstract pull-request number
-        required: true
-        type: number
 
 permissions:
   contents: read
+  issues: read
   pull-requests: write
 
 concurrency:
@@ -29,20 +24,13 @@ jobs:
     # workflow_run supplies secrets only after the unprivileged validator has
     # finished. This job never downloads its artifacts or checks out the pull
     # request; it treats the submitted metadata strictly as bounded API data.
-    # A manual run remains available as a maintainer fallback.
+    # Registration and the first review use the separate, explicitly manual
+    # workflow. This lane handles only later versions from registered owners.
     if: >-
       github.repository == 'stat701/stat701.github.io' &&
-      (
-        (
-          github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/main'
-        ) ||
-        (
-          github.event_name == 'workflow_run' &&
-          github.event.workflow_run.event == 'pull_request' &&
-          github.event.workflow_run.conclusion == 'success'
-        )
-      )
+      github.event.repository.default_branch == 'main' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -63,69 +51,71 @@ jobs:
         id: pull_request
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EVENT_NAME: ${{ github.event_name }}
           GH_TOKEN: ${{ github.token }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+          HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          MANUAL_PR_NUMBER: ${{ inputs.pr_number }}
           REPOSITORY: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            pr_number="$MANUAL_PR_NUMBER"
-            automatic=false
-            expected_head_sha=""
-          else
-            automatic=true
-            expected_head_sha="$HEAD_SHA"
-            if [[ ! "$HEAD_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
-              || [[ -z "$HEAD_OWNER" ]] \
-              || [[ -z "$HEAD_BRANCH" ]]; then
-              echo "::error::The validated workflow run has invalid head metadata."
-              exit 1
-            fi
+          if [[ ! "$HEAD_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
+            || [[ -z "$HEAD_OWNER" ]] \
+            || [[ -z "$HEAD_REPOSITORY" ]] \
+            || [[ -z "$HEAD_BRANCH" ]]; then
+            echo "::error::The validated workflow run has invalid head metadata."
+            exit 1
+          fi
 
-            # workflow_run payloads do not reliably populate pull_requests.
-            # Resolve the one currently open PR by its repository owner and
-            # branch, then bind it to the exact head that passed validation.
-            pull_request="$(
-              gh api \
-                --method GET \
-                "/repos/$REPOSITORY/pulls" \
-                -f state=open \
-                -f base="$DEFAULT_BRANCH" \
-                -f head="$HEAD_OWNER:$HEAD_BRANCH" \
-                --jq 'if length == 1 then [.[0].number, .[0].head.sha, .[0].base.repo.full_name, .[0].base.ref] | @tsv else "" end'
-            )"
-            IFS=$'\t' read -r pr_number resolved_head_sha base_repository base_branch \
-              <<< "$pull_request"
-            if [[ "$resolved_head_sha" != "$HEAD_SHA" ]] \
-              || [[ "$base_repository" != "$REPOSITORY" ]] \
-              || [[ "$base_branch" != "$DEFAULT_BRANCH" ]]; then
-              echo "::error::Could not bind the validated run to one current pull request."
-              exit 1
-            fi
+          # workflow_run payloads do not reliably populate pull_requests.
+          # Resolve the one currently open PR by repository owner and branch,
+          # then bind it to the exact head commit that passed validation.
+          pull_request="$(
+            gh api \
+              --method GET \
+              "/repos/$REPOSITORY/pulls" \
+              -f state=open \
+              -f base="$DEFAULT_BRANCH" \
+              -f head="$HEAD_OWNER:$HEAD_BRANCH" \
+              --jq 'if length == 0 then "none" elif length == 1 then [.[0].number, .[0].head.sha, .[0].head.repo.full_name, .[0].base.repo.full_name, .[0].base.ref] | @tsv else "ambiguous" end'
+          )"
+          if [[ "$pull_request" == "none" ]]; then
+            echo "review_eligible=false" >> "$GITHUB_OUTPUT"
+            echo "The validated pull request is no longer open; skipping advisory review."
+            exit 0
+          fi
+          if [[ "$pull_request" == "ambiguous" ]]; then
+            echo "::error::More than one open pull request matched the validated branch."
+            exit 1
+          fi
+          IFS=$'\t' read -r pr_number resolved_head_sha resolved_head_repository \
+            base_repository base_branch <<< "$pull_request"
+          if [[ "$resolved_head_sha" != "$HEAD_SHA" ]] \
+            || [[ "$resolved_head_repository" != "$HEAD_REPOSITORY" ]] \
+            || [[ "$base_repository" != "$REPOSITORY" ]] \
+            || [[ "$base_branch" != "$DEFAULT_BRANCH" ]]; then
+            echo "::error::Could not bind the validated run to one current pull request."
+            exit 1
           fi
 
           if [[ ! "$pr_number" =~ ^[1-9][0-9]{0,7}$ ]]; then
             echo "::error::Could not resolve one validated pull request."
             exit 1
           fi
+          echo "review_eligible=true" >> "$GITHUB_OUTPUT"
           echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
-          echo "automatic=$automatic" >> "$GITHUB_OUTPUT"
-          echo "expected_head_sha=$expected_head_sha" >> "$GITHUB_OUTPUT"
+          echo "expected_head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Review the title and abstract
+        if: steps.pull_request.outputs.review_eligible == 'true'
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EXPECTED_HEAD_SHA: ${{ steps.pull_request.outputs.expected_head_sha }}
           GITHUB_TOKEN: ${{ github.token }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_REVIEW_MODEL: ${{ vars.OPENAI_REVIEW_MODEL }}
-          AUTOMATIC: ${{ steps.pull_request.outputs.automatic }}
           PR_NUMBER: ${{ steps.pull_request.outputs.pr_number }}
           REPOSITORY: ${{ github.repository }}
         shell: bash
@@ -136,9 +126,7 @@ jobs:
             --pr-number "$PR_NUMBER"
             --default-branch "$DEFAULT_BRANCH"
             --model "${OPENAI_REVIEW_MODEL:-gpt-5.6-terra}"
+            --skip-non-metadata
+            --expected-head-sha "$EXPECTED_HEAD_SHA"
           )
-          if [[ "$AUTOMATIC" == "true" ]]; then
-            review_arguments+=(--skip-non-metadata)
-            review_arguments+=(--expected-head-sha "$EXPECTED_HEAD_SHA")
-          fi
           python scripts/review_submission.py "${review_arguments[@]}"

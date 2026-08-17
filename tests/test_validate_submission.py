@@ -8,6 +8,7 @@ from io import StringIO
 from pathlib import Path
 
 from scripts.validate_submission import (
+    MAX_PDF_BYTES,
     ValidationError,
     main,
     parse_talk_document,
@@ -211,6 +212,9 @@ class TalkDocumentTests(unittest.TestCase):
 
 
 class PdfTests(unittest.TestCase):
+    def test_pdf_cap_matches_github_browser_upload_limit(self) -> None:
+        self.assertEqual(MAX_PDF_BYTES, 25 * 1024 * 1024)
+
     def test_pdf_envelope_is_accepted(self) -> None:
         validate_pdf_bytes(fake_pdf())
 

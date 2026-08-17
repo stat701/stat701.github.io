@@ -17,6 +17,9 @@ submission type.
 - [ ] I am the scheduled speaker for this record ID.
 - [ ] I understand that this pull request, its discussion, and all submitted
       content are public.
+- [ ] I understand that the submitted title and abstract or PDF will be sent
+      to OpenAI for an advisory review, and I included no confidential,
+      sensitive, private, or restricted material.
 - [ ] This pull request changes only my assigned title-and-abstract file **or**
       adds only my one PDF; it does not combine the two submissions.
 
@@ -33,6 +36,8 @@ For a **title and abstract** submission:
       compressing them into a dense technical summary.
 - [ ] I understand that the title and abstract are locked against student edits
       after this pull request is merged.
+- [ ] I understand that the instructor must verify and register my GitHub
+      account before the first AI review runs.
 
 For a **slides** submission:
 
@@ -41,10 +46,17 @@ For a **slides** submission:
 - [ ] The PDF filename exactly matches my assigned record ID.
 - [ ] I opened the final PDF myself and confirmed that every page renders.
 - [ ] I did not include PowerPoint, Keynote, HTML, source files, or code.
+- [ ] I opened this pull request from the same GitHub account that was
+      registered from my title-and-abstract submission.
 - [ ] I understand that the PDF is locked against student replacement after it
       is merged.
 
 Automated checks validate the submission and verify that PDFs open and render.
-After title/abstract validation succeeds, an advisory AI review runs
-automatically. PDFs are not sent to OpenAI. If an automated review cannot reach
-a reliable decision, the instructor reviews the submission manually.
+For the first title-and-abstract submission, the instructor verifies the
+student's GitHub identity, manually registers that account, and launches the
+first advisory AI review. Later eligible revisions and PDF submissions are
+recognized automatically only for that registered account. Each exact file
+version receives at most one AI attempt. If an automated review is uncertain,
+cannot read the submission, or needs human judgment, the instructor reviews it
+manually. AI feedback never approves or merges a pull request; the instructor
+approves every merge.

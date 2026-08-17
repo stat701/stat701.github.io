@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  issues: read
 
 concurrency:
   group: submission-${{ github.event.pull_request.number }}
@@ -46,24 +47,16 @@ jobs:
           python-version: "3.13"
 
       - name: Test the trusted validator
-        env:
-          BASE_REPOSITORY: ${{ github.repository }}
-          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ -f trusted/scripts/validate_submission.py ]]; then
-            cd trusted
-            python -m unittest discover -s tests -v
-          elif [[ "$HEAD_REPOSITORY" == "$BASE_REPOSITORY" ]]; then
-            echo "Bootstrap pull request: testing the candidate validator without granting it secrets or write access."
-            cd submission
-            python -m unittest discover -s tests -v
-          else
+          if [[ ! -f trusted/scripts/validate_submission.py ]]; then
             echo "::error::The trusted base commit does not contain the submission validator."
             exit 1
           fi
+          cd trusted
+          python -m unittest discover -s tests -v
 
       - name: Validate the pull-request submission
         id: submission
@@ -72,45 +65,106 @@ jobs:
           BASE_REPOSITORY: ${{ github.repository }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ ! -f trusted/scripts/validate_submission.py && "$HEAD_REPOSITORY" == "$BASE_REPOSITORY" ]]; then
-            echo "Bootstrap pull request: student file policy becomes active after this change reaches main."
-            {
-              echo "submission_type=none"
-              echo "submission_path="
-              echo "record_id="
-            } >> "$GITHUB_OUTPUT"
-          else
-            git -C submission cat-file -e "${BASE_SHA}^{commit}"
-            git -C submission cat-file -e "${HEAD_SHA}^{commit}"
-            cd submission
-            validator_arguments=(
-              --base "$BASE_SHA"
-              --head "$HEAD_SHA"
-              --github-output "$GITHUB_OUTPUT"
-            )
-            if [[ "$HEAD_REPOSITORY" == "$BASE_REPOSITORY" ]]; then
-              # Students use forks and cannot select this path. This narrow
-              # escape hatch lets a maintainer correct a published record or
-              # replace a published PDF through a reviewed same-repo PR. The
-              # help check keeps the rollout PR compatible with the older
-              # trusted validator on its base commit.
-              if python ../trusted/scripts/validate_submission.py --help \
-                | grep --quiet -- '--allow-published-updates'; then
-                validator_arguments+=(--allow-published-updates)
-              fi
-            fi
-            python ../trusted/scripts/validate_submission.py "${validator_arguments[@]}"
-
-            if [[ "$HEAD_REPOSITORY" != "$BASE_REPOSITORY" ]] \
-              && [[ "$(grep '^submission_type=' "$GITHUB_OUTPUT" | tail -n 1)" == "submission_type=none" ]]; then
-              echo "::error::A fork pull request must contain exactly one title/abstract submission or one PDF submission."
-              exit 1
+          git -C submission cat-file -e "${BASE_SHA}^{commit}"
+          git -C submission cat-file -e "${HEAD_SHA}^{commit}"
+          cd submission
+          validator_arguments=(
+            --base "$BASE_SHA"
+            --head "$HEAD_SHA"
+            --github-output "$GITHUB_OUTPUT"
+          )
+          if [[ "$HEAD_REPOSITORY" == "$BASE_REPOSITORY" ]] \
+            && [[ "$PR_AUTHOR_ID" == "12053767" ]] \
+            && [[ "$PR_AUTHOR_TYPE" == "User" ]]; then
+            # This override belongs only to the registrar's stable numeric
+            # GitHub identity. Merely opening a same-repository PR never
+            # grants a student permission to rewrite a published record.
+            # The help check keeps this rollout compatible with the older
+            # trusted validator on its base commit.
+            if python ../trusted/scripts/validate_submission.py --help \
+              | grep --quiet -- '--allow-published-updates'; then
+              validator_arguments+=(--allow-published-updates)
             fi
           fi
+          python ../trusted/scripts/validate_submission.py "${validator_arguments[@]}"
+
+          if [[ "$HEAD_REPOSITORY" != "$BASE_REPOSITORY" ]] \
+            && [[ "$(grep '^submission_type=' "$GITHUB_OUTPUT" | tail -n 1)" == "submission_type=none" ]]; then
+            echo "::error::A fork pull request must contain exactly one title/abstract submission or one PDF submission."
+            exit 1
+          fi
+
+      - name: Verify the scheduled-record owner
+        id: ownership
+        if: >-
+          steps.submission.outputs.submission_type == 'metadata' ||
+          steps.submission.outputs.submission_type == 'slides'
+        env:
+          BASE_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          RECORD_ID: ${{ steps.submission.outputs.record_id }}
+          SUBMISSION_TYPE: ${{ steps.submission.outputs.submission_type }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f trusted/scripts/submission_registry.py ]]; then
+            # This applies only while the enrollment feature itself is first
+            # being merged. All later submissions fail closed if the trusted
+            # base commit lacks the registry implementation.
+            if [[ "$HEAD_REPOSITORY" == "$BASE_REPOSITORY" ]] \
+              && [[ "$PR_AUTHOR_ID" == "12053767" ]] \
+              && [[ "$PR_AUTHOR_TYPE" == "User" ]]; then
+              echo "ownership_status=bootstrap_maintainer" >> "$GITHUB_OUTPUT"
+              echo "registration_required=false" >> "$GITHUB_OUTPUT"
+              echo "Bootstrap pull request: trusted ownership checks become active on main."
+              exit 0
+            fi
+            echo "::error::The trusted base commit does not contain the ownership registry."
+            exit 1
+          fi
+
+          registry_result="$(
+            python trusted/scripts/submission_registry.py \
+              check-pr \
+              --token-env GITHUB_TOKEN \
+              --repository "$BASE_REPOSITORY" \
+              --record-id "$RECORD_ID" \
+              --submission-type "$SUBMISSION_TYPE" \
+              --author-id "$PR_AUTHOR_ID" \
+              --author-login "$PR_AUTHOR_LOGIN" \
+              --author-type "$PR_AUTHOR_TYPE" \
+              --head-repository "$HEAD_REPOSITORY"
+          )"
+          printf '%s\n' "$registry_result"
+          registry_status="$(jq --exit-status --raw-output '.status' <<< "$registry_result")"
+          case "$registry_status" in
+            registration_required)
+              if [[ "$SUBMISSION_TYPE" != "metadata" ]]; then
+                echo "::error::Only a first metadata PR may await registration."
+                exit 1
+              fi
+              echo "registration_required=true" >> "$GITHUB_OUTPUT"
+              ;;
+            owner_match|maintainer_override)
+              echo "registration_required=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::The ownership registry returned an unknown decision."
+              exit 1
+              ;;
+          esac
+          echo "ownership_status=$registry_status" >> "$GITHUB_OUTPUT"
 
       - name: Install PDF validation tools
         if: steps.submission.outputs.submission_type == 'slides'
