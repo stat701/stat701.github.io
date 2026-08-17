@@ -4,13 +4,20 @@ import base64
 import hashlib
 import json
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from unittest import mock
 
 from scripts.review_submission import (
+    AlreadyReviewed,
     COMMENT_MARKER,
     EligibilityError,
+    NotMetadataSubmission,
     OpenAIReviewError,
+    PullRequestInfo,
     ReviewResult,
+    SubmissionFile,
+    _bot_completed_blob_shas,
     _bot_marker_comments,
     build_openai_request,
     build_submission_prompt,
@@ -19,8 +26,42 @@ from scripts.review_submission import (
     fetch_file_blob,
     fetch_git_blob,
     parse_openai_response,
+    main as review_main,
+    run_review,
+    upsert_review_comment,
     validate_review_data,
 )
+
+
+BASE_TALK = """\
+---
+record_id: fall-2026-01
+speaker: "Ada Student"
+date: 2026-08-31
+order: 1
+year_in_program: 3
+semester: fall-2026
+title: ""
+---
+
+<!-- Replace this comment with your abstract. -->
+"""
+
+HEAD_TALK = """\
+---
+record_id: fall-2026-01
+speaker: "Ada Student"
+date: 2026-08-31
+order: 1
+year_in_program: 3
+semester: fall-2026
+title: "A Statistical Idea Worth Explaining"
+---
+
+This talk introduces a useful approach to statistical inference and explains
+the central assumptions, computational strategy, and practical consequences
+through examples that connect the underlying theory to modern data analysis.
+"""
 
 
 def responses_payload(review: dict[str, object]) -> dict[str, object]:
@@ -270,7 +311,11 @@ class CommentFormattingTests(unittest.TestCase):
             confidence="medium",
         )
 
-        comment = format_review_comment(result, reviewed_head_sha="a" * 40)
+        comment = format_review_comment(
+            result,
+            reviewed_head_sha="a" * 40,
+            completed_blob_sha="b" * 40,
+        )
 
         self.assertTrue(comment.startswith(f"{COMMENT_MARKER}\n"))
         self.assertEqual(comment.count(COMMENT_MARKER), 1)
@@ -278,6 +323,9 @@ class CommentFormattingTests(unittest.TestCase):
         self.assertIn("does not approve or merge", comment)
         self.assertIn("Novelty and factual correctness were not evaluated", comment)
         self.assertIn(f"Reviewed head commit: `{'a' * 40}`", comment)
+        self.assertIn(
+            f"<!-- stat701-ai-review-complete:{'b' * 40} -->", comment
+        )
 
     def test_human_review_is_explicitly_escalated(self) -> None:
         result = ReviewResult(
@@ -292,6 +340,7 @@ class CommentFormattingTests(unittest.TestCase):
 
         self.assertIn("Human review needed", comment)
         self.assertIn("maintainer should review", comment)
+        self.assertNotIn("stat701-ai-review-complete:", comment)
 
     def test_model_text_cannot_inject_marker_mentions_or_markdown(self) -> None:
         result = ReviewResult(
@@ -335,6 +384,246 @@ class CommentFormattingTests(unittest.TestCase):
         ]
 
         self.assertEqual(_bot_marker_comments(comments), [42])
+
+    def test_completion_marker_spoof_is_ignored(self) -> None:
+        first_blob = "a" * 40
+        second_blob = "b" * 40
+        comments = [
+            {
+                "id": 99,
+                "body": f"<!-- stat701-ai-review-complete:{first_blob} -->",
+                "user": {"login": "untrusted-student"},
+            },
+            {
+                "id": 42,
+                "body": f"<!-- stat701-ai-review-complete:{second_blob} -->",
+                "user": {"login": "github-actions[bot]"},
+            },
+        ]
+
+        self.assertEqual(_bot_completed_blob_shas(comments), {second_blob})
+
+    def test_upsert_preserves_successful_blob_history(self) -> None:
+        first_blob = "a" * 40
+        second_blob = "b" * 40
+        existing_comments = [
+            {
+                "id": 42,
+                "body": (
+                    f"{COMMENT_MARKER}\n"
+                    f"<!-- stat701-ai-review-complete:{first_blob} -->\n"
+                    "Earlier review"
+                ),
+                "user": {"login": "github-actions[bot]"},
+            }
+        ]
+        result = ReviewResult(
+            status="looks_good",
+            summary="The title and abstract form a coherent seminar topic.",
+            strengths=(),
+            revision_requests=(),
+            confidence="high",
+        )
+        new_body = format_review_comment(result, completed_blob_sha=second_blob)
+
+        with mock.patch(
+            "scripts.review_submission.github_request",
+            side_effect=[existing_comments, {}],
+        ) as request:
+            upsert_review_comment(
+                token="opaque-token",
+                repository="stat701/stat701.github.io",
+                pr_number=7,
+                body=new_body,
+            )
+
+        patched_body = request.call_args_list[1].kwargs["payload"]["body"]
+        self.assertIn(first_blob, patched_body)
+        self.assertIn(second_blob, patched_body)
+
+
+class ReviewDeduplicationTests(unittest.TestCase):
+    @staticmethod
+    def _pull_request(number: int = 7) -> PullRequestInfo:
+        return PullRequestInfo(
+            number=number,
+            base_repository="stat701/stat701.github.io",
+            base_branch="main",
+            base_sha="a" * 40,
+            head_repository="speaker/stat701.github.io",
+            head_sha="b" * 40,
+        )
+
+    @staticmethod
+    def _submission(blob_sha: str = "c" * 40) -> SubmissionFile:
+        return SubmissionFile(
+            path="_talks/fall-2026-01.md",
+            record_id="fall-2026-01",
+            blob_sha=blob_sha,
+        )
+
+    def test_identical_blob_skips_openai_before_spending_credits(self) -> None:
+        pull_request = self._pull_request()
+        submission = self._submission()
+
+        with mock.patch(
+            "scripts.review_submission.fetch_pull_request",
+            side_effect=[pull_request, pull_request],
+        ), mock.patch(
+            "scripts.review_submission.fetch_submission_file",
+            return_value=submission,
+        ), mock.patch(
+            "scripts.review_submission.fetch_file_blob",
+            side_effect=[BASE_TALK.encode(), HEAD_TALK.encode()],
+        ), mock.patch(
+            "scripts.review_submission.review_already_completed",
+            return_value=True,
+        ), mock.patch(
+            "scripts.review_submission.request_openai_review"
+        ) as openai_review:
+            with self.assertRaises(AlreadyReviewed):
+                run_review(
+                    token="opaque-token",
+                    openai_api_key="opaque-key",
+                    repository="stat701/stat701.github.io",
+                    pr_number=7,
+                    default_branch="main",
+                    model="gpt-5.6-terra",
+                )
+
+        openai_review.assert_not_called()
+
+    def test_new_blob_calls_openai_and_returns_completion_identity(self) -> None:
+        pull_request = self._pull_request()
+        submission = self._submission("d" * 40)
+        result = ReviewResult(
+            status="looks_good",
+            summary="The proposed talk is coherent and accessible.",
+            strengths=("The motivation is clear.",),
+            revision_requests=(),
+            confidence="high",
+        )
+
+        with mock.patch(
+            "scripts.review_submission.fetch_pull_request",
+            side_effect=[pull_request, pull_request, pull_request],
+        ), mock.patch(
+            "scripts.review_submission.fetch_submission_file",
+            return_value=submission,
+        ), mock.patch(
+            "scripts.review_submission.fetch_file_blob",
+            side_effect=[BASE_TALK.encode(), HEAD_TALK.encode()],
+        ), mock.patch(
+            "scripts.review_submission.review_already_completed",
+            return_value=False,
+        ), mock.patch(
+            "scripts.review_submission.request_openai_review",
+            return_value=result,
+        ) as openai_review:
+            returned = run_review(
+                token="opaque-token",
+                openai_api_key="opaque-key",
+                repository="stat701/stat701.github.io",
+                pr_number=7,
+                default_branch="main",
+                model="gpt-5.6-terra",
+                expected_head_sha="b" * 40,
+            )
+
+        self.assertEqual(returned, (result, True, "b" * 40, "d" * 40))
+        openai_review.assert_called_once()
+
+    def test_automatic_non_metadata_run_skips_cleanly(self) -> None:
+        with mock.patch(
+            "scripts.review_submission.run_review",
+            side_effect=NotMetadataSubmission("Only metadata is eligible."),
+        ) as run, redirect_stdout(StringIO()):
+            return_code = review_main(
+                [
+                    "--repository",
+                    "stat701/stat701.github.io",
+                    "--pr-number",
+                    "9",
+                    "--skip-non-metadata",
+                    "--expected-head-sha",
+                    "d" * 40,
+                ]
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(run.call_args.kwargs["expected_head_sha"], "d" * 40)
+
+    def test_expected_head_mismatch_stops_before_reading_submission(self) -> None:
+        pull_request = PullRequestInfo(
+            number=10,
+            base_repository="stat701/stat701.github.io",
+            base_branch="main",
+            base_sha="a" * 40,
+            head_repository="speaker/stat701.github.io",
+            head_sha="b" * 40,
+        )
+
+        with mock.patch(
+            "scripts.review_submission.fetch_pull_request",
+            return_value=pull_request,
+        ), mock.patch(
+            "scripts.review_submission.fetch_submission_file"
+        ) as submission_file:
+            with self.assertRaisesRegex(EligibilityError, "after deterministic"):
+                run_review(
+                    token="opaque-token",
+                    openai_api_key="opaque-key",
+                    repository="stat701/stat701.github.io",
+                    pr_number=10,
+                    default_branch="main",
+                    model="gpt-5.6-terra",
+                    expected_head_sha="c" * 40,
+                )
+
+        submission_file.assert_not_called()
+
+    def test_published_fork_edit_is_rejected_before_openai(self) -> None:
+        pull_request = PullRequestInfo(
+            number=8,
+            base_repository="stat701/stat701.github.io",
+            base_branch="main",
+            base_sha="d" * 40,
+            head_repository="speaker/stat701.github.io",
+            head_sha="e" * 40,
+        )
+        submission = SubmissionFile(
+            path="_talks/fall-2026-01.md",
+            record_id="fall-2026-01",
+            blob_sha="f" * 40,
+        )
+        corrected_head = HEAD_TALK.replace(
+            "A Statistical Idea Worth Explaining",
+            "A Revised Statistical Idea Worth Explaining",
+        )
+
+        with mock.patch(
+            "scripts.review_submission.fetch_pull_request",
+            return_value=pull_request,
+        ), mock.patch(
+            "scripts.review_submission.fetch_submission_file",
+            return_value=submission,
+        ), mock.patch(
+            "scripts.review_submission.fetch_file_blob",
+            side_effect=[HEAD_TALK.encode(), corrected_head.encode()],
+        ), mock.patch(
+            "scripts.review_submission.request_openai_review"
+        ) as openai_review:
+            with self.assertRaisesRegex(EligibilityError, "deterministic validation"):
+                run_review(
+                    token="opaque-token",
+                    openai_api_key="opaque-key",
+                    repository="stat701/stat701.github.io",
+                    pr_number=8,
+                    default_branch="main",
+                    model="gpt-5.6-terra",
+                )
+
+        openai_review.assert_not_called()
 
 
 if __name__ == "__main__":

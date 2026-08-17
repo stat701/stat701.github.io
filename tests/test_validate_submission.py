@@ -114,6 +114,30 @@ class TalkDocumentTests(unittest.TestCase):
 
         self.assertEqual(document.abstract, VALID_ABSTRACT)
 
+    def test_completed_base_is_locked_unless_maintainer_update_is_allowed(self) -> None:
+        completed = talk_text(
+            title='"A Statistical Idea Worth Explaining"', abstract=VALID_ABSTRACT
+        )
+        corrected = talk_text(
+            title='"A Better Statistical Idea Worth Explaining"',
+            abstract=VALID_ABSTRACT + " The revised framing is clearer for the audience.",
+        )
+
+        with self.assertRaisesRegex(ValidationError, "already published and locked"):
+            validate_talk_document(
+                base_text=completed,
+                head_text=corrected,
+                expected_record_id="fall-2026-01",
+            )
+
+        document = validate_talk_document(
+            base_text=completed,
+            head_text=corrected,
+            expected_record_id="fall-2026-01",
+            allow_completed_base=True,
+        )
+        self.assertEqual(document.title, "A Better Statistical Idea Worth Explaining")
+
     def test_immutable_field_change_is_rejected(self) -> None:
         head = talk_text(
             speaker='"A Different Student"',
@@ -231,6 +255,31 @@ class RepositoryDiffTests(unittest.TestCase):
         self.assertEqual(result.submission_type, "metadata")
         self.assertEqual(result.record_id, "fall-2026-01")
 
+    def test_published_metadata_is_locked_for_students_but_not_maintainers(self) -> None:
+        published_base = self.commit_completed_metadata()
+        self.repository.write_text(
+            "_talks/fall-2026-01.md",
+            talk_text(
+                title='"A Better Statistical Idea Worth Explaining"',
+                abstract=(
+                    VALID_ABSTRACT
+                    + " This correction makes the intended seminar framing explicit."
+                ),
+            ),
+        )
+        head = self.repository.commit("Correct published title and abstract")
+
+        with self.assertRaisesRegex(ValidationError, "published and locked"):
+            validate_submission(self.repository.path, published_base, head)
+
+        result = validate_submission(
+            self.repository.path,
+            published_base,
+            head,
+            allow_published_updates=True,
+        )
+        self.assertEqual(result.submission_type, "metadata")
+
     def test_one_pdf_is_accepted(self) -> None:
         slides_base = self.commit_completed_metadata()
         self.repository.write_bytes(
@@ -242,6 +291,27 @@ class RepositoryDiffTests(unittest.TestCase):
 
         self.assertEqual(result.submission_type, "slides")
         self.assertEqual(result.record_id, "fall-2026-01")
+
+    def test_published_pdf_is_locked_for_students_but_not_maintainers(self) -> None:
+        metadata_base = self.commit_completed_metadata()
+        slide_path = "assets/slides/fall-2026/fall-2026-01.pdf"
+        self.repository.write_bytes(slide_path, fake_pdf())
+        published_base = self.repository.commit("Publish slides")
+        replacement_pdf = b"%PDF-1.7\n" + (b"1" * 1_100) + b"\n%%EOF\n"
+        self.repository.write_bytes(slide_path, replacement_pdf)
+        head = self.repository.commit("Replace published slides")
+
+        with self.assertRaisesRegex(ValidationError, "PDF is locked"):
+            validate_submission(self.repository.path, published_base, head)
+
+        result = validate_submission(
+            self.repository.path,
+            published_base,
+            head,
+            allow_published_updates=True,
+        )
+        self.assertEqual(result.submission_type, "slides")
+        self.assertNotEqual(metadata_base, published_base)
 
     def test_pdf_before_completed_metadata_is_rejected(self) -> None:
         self.repository.write_bytes(
@@ -308,6 +378,32 @@ class RepositoryDiffTests(unittest.TestCase):
             "submission_path=assets/slides/fall-2026/fall-2026-01.pdf\n"
             "record_id=fall-2026-01\n",
         )
+
+    def test_cli_allows_explicit_maintainer_correction(self) -> None:
+        published_base = self.commit_completed_metadata()
+        self.repository.write_text(
+            "_talks/fall-2026-01.md",
+            talk_text(
+                title='"A Corrected Statistical Idea Worth Explaining"',
+                abstract=VALID_ABSTRACT + " This is an instructor-approved correction.",
+            ),
+        )
+        head = self.repository.commit("Correct published metadata through CLI")
+
+        with redirect_stdout(StringIO()):
+            return_code = main(
+                [
+                    "--repo",
+                    str(self.repository.path),
+                    "--base",
+                    published_base,
+                    "--head",
+                    head,
+                    "--allow-published-updates",
+                ]
+            )
+
+        self.assertEqual(return_code, 0)
 
     def test_talk_file_deletion_is_rejected(self) -> None:
         (self.repository.path / "_talks/fall-2026-01.md").unlink()

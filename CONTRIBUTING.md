@@ -35,8 +35,9 @@ do not try to compress a paper into a dense technical treatise.
 - Everything submitted here is public, including your title, abstract, PDF,
   pull-request discussion, and revision history. Do not include a NetID, email
   address, private data, or material that cannot be shared publicly.
-- A maintainer may send the public title and abstract to OpenAI for an optional
-  automated review. Do not include confidential or sensitive information.
+- After the deterministic check passes, GitHub automatically sends the public
+  title and abstract to OpenAI for an advisory review. The PDF is not sent to
+  OpenAI. Do not include confidential or sensitive information.
 
 ## First pull request: title and abstract
 
@@ -91,6 +92,11 @@ and what the audience should expect to learn.
 The example values are illustrative. Preserve all identifying and scheduling
 values already present in your assigned file.
 
+You may revise this file on the same pull-request branch while the pull request
+is open. After the title and abstract are merged, the published record is
+locked against later student edits. Contact the instructor if a correction is
+needed.
+
 ## Second pull request: PDF slides
 
 Make the slides submission as a separate pull request. It must add exactly one
@@ -121,8 +127,9 @@ Quarto, images, source files, or code.
    and create the pull request.
 
 After the PDF is merged, the website will automatically make the presentation
-entry clickable. Do not edit the calendar, HTML, or your talk file to add a
-link.
+entry clickable. The published PDF is then locked against later student
+replacement; contact the instructor if a correction is needed. Do not edit the
+calendar, HTML, or your talk file to add a link.
 
 ## Automated checks and review
 
@@ -130,13 +137,17 @@ GitHub runs checks on each pull request.
 
 - For a title-and-abstract submission, the checks confirm that only your
   assigned file changed, the protected scheduling fields stayed unchanged,
-  and both a substantive title and abstract are present. A maintainer may also
-  run an optional automated review of whether the title and abstract are
+  and both a substantive title and abstract are present. After those checks
+  pass, an automated review evaluates whether the title and abstract are
   coherent, motivating, appropriate to your year in the program, and framed as
   an accessible introduction rather than a dense technical summary. It does
-  not judge novelty or factual correctness.
+  not judge novelty or factual correctness. Once a successful review is
+  recorded, normal re-runs do not review that exact file version again; a
+  revision in the open pull request receives fresh feedback.
 - For a slides submission, the checks confirm that the pull request adds only
-  the correctly named PDF and that the file can be opened and rendered.
+  the correctly named PDF, that it is unencrypted and contains no JavaScript or
+  embedded files, and that every page can be opened and rendered. This
+  technical check does not use AI.
 
 If a check asks for a revision, edit the same file on the same branch in your
 fork and commit the correction. The existing pull request updates
@@ -156,6 +167,9 @@ review are complete.
   your assigned Markdown file or only your assigned PDF.
 - **The checks say a scheduling field changed:** restore every front-matter
   value except `title` to the value on the course repository's `main` branch.
+- **The checks say a published file is locked:** contact the instructor. Do
+  not open another student pull request to change a merged title, abstract, or
+  PDF.
 - **The PDF check fails:** export the presentation again as a standard,
   unencrypted PDF, verify that it opens locally, and replace the PDF in the
   same pull-request branch.

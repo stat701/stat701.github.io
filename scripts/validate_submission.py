@@ -275,7 +275,11 @@ def _validate_plain_prose(value: str, label: str) -> None:
 
 
 def validate_talk_document(
-    *, base_text: str, head_text: str, expected_record_id: str
+    *,
+    base_text: str,
+    head_text: str,
+    expected_record_id: str,
+    allow_completed_base: bool = False,
 ) -> TalkDocument:
     """Validate a completed title-and-abstract submission.
 
@@ -297,6 +301,13 @@ def validate_talk_document(
         )
     if head.fields["record_id"] != expected_record_id:
         raise ValidationError("The record_id must match the talk filename.")
+
+    if not allow_completed_base and (base.title or base.abstract):
+        raise ValidationError(
+            "The title and abstract are already published and locked against "
+            "further student edits. Contact the instructor if a correction is "
+            "needed."
+        )
 
     title_index = EXPECTED_FRONT_MATTER_FIELDS.index("title")
     for index, (base_line, head_line) in enumerate(
@@ -483,7 +494,13 @@ def _decode_metadata(data: bytes, path: str) -> str:
         raise ValidationError(f"'{path}' must be UTF-8 text.") from error
 
 
-def validate_submission(repo: Path | str, base: str, head: str) -> ValidationResult:
+def validate_submission(
+    repo: Path | str,
+    base: str,
+    head: str,
+    *,
+    allow_published_updates: bool = False,
+) -> ValidationResult:
     """Validate the submission diff and return normalized submission metadata."""
 
     repo_path = Path(repo).resolve()
@@ -539,6 +556,7 @@ def validate_submission(repo: Path | str, base: str, head: str) -> ValidationRes
             base_text=_decode_metadata(base_bytes, change.path),
             head_text=_decode_metadata(head_bytes, change.path),
             expected_record_id=record_id,
+            allow_completed_base=allow_published_updates,
         )
         return ValidationResult(
             submission_type="metadata",
@@ -552,6 +570,11 @@ def validate_submission(repo: Path | str, base: str, head: str) -> ValidationRes
             "A slides submission must add or update its assigned PDF; it may not "
             "delete or rename a file."
         )
+    if change.status == "M" and not allow_published_updates:
+        raise ValidationError(
+            "The published PDF is locked against further student edits. Contact "
+            "the instructor if a replacement is needed."
+        )
     assert slides_match is not None
     record_id = slides_match.group("record_id")
     talk_path = f"_talks/{record_id}.md"
@@ -564,6 +587,7 @@ def validate_submission(repo: Path | str, base: str, head: str) -> ValidationRes
             base_text=talk_text,
             head_text=talk_text,
             expected_record_id=record_id,
+            allow_completed_base=True,
         )
     except ValidationError as error:
         raise ValidationError(
@@ -603,6 +627,14 @@ def _build_argument_parser() -> argparse.ArgumentParser:
             "GitHub Actions output file"
         ),
     )
+    parser.add_argument(
+        "--allow-published-updates",
+        action="store_true",
+        help=(
+            "Allow a trusted same-repository maintainer pull request to correct "
+            "already-published metadata or replace an already-published PDF"
+        ),
+    )
     return parser
 
 
@@ -630,7 +662,12 @@ def _write_github_outputs(output_path: str, result: ValidationResult) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _build_argument_parser().parse_args(argv)
     try:
-        result = validate_submission(arguments.repo, arguments.base, arguments.head)
+        result = validate_submission(
+            arguments.repo,
+            arguments.base,
+            arguments.head,
+            allow_published_updates=arguments.allow_published_updates,
+        )
     except ValidationError as error:
         print(f"Submission validation failed: {error}", file=sys.stderr)
         return 1

@@ -87,10 +87,23 @@ jobs:
             git -C submission cat-file -e "${BASE_SHA}^{commit}"
             git -C submission cat-file -e "${HEAD_SHA}^{commit}"
             cd submission
-            python ../trusted/scripts/validate_submission.py \
-              --base "$BASE_SHA" \
-              --head "$HEAD_SHA" \
+            validator_arguments=(
+              --base "$BASE_SHA"
+              --head "$HEAD_SHA"
               --github-output "$GITHUB_OUTPUT"
+            )
+            if [[ "$HEAD_REPOSITORY" == "$BASE_REPOSITORY" ]]; then
+              # Students use forks and cannot select this path. This narrow
+              # escape hatch lets a maintainer correct a published record or
+              # replace a published PDF through a reviewed same-repo PR. The
+              # help check keeps the rollout PR compatible with the older
+              # trusted validator on its base commit.
+              if python ../trusted/scripts/validate_submission.py --help \
+                | grep --quiet -- '--allow-published-updates'; then
+                validator_arguments+=(--allow-published-updates)
+              fi
+            fi
+            python ../trusted/scripts/validate_submission.py "${validator_arguments[@]}"
 
             if [[ "$HEAD_REPOSITORY" != "$BASE_REPOSITORY" ]] \
               && [[ "$(grep '^submission_type=' "$GITHUB_OUTPUT" | tail -n 1)" == "submission_type=none" ]]; then

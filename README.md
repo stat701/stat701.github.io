@@ -29,6 +29,9 @@ Then open <http://localhost:4000>.
   file, then submit a single predictably named PDF in a separate pull request.
 - The site automatically shows merged titles and abstracts and links a PDF
   when the expected file exists under `assets/slides/`.
+- After either submission is merged, student fork pull requests cannot edit the
+  published metadata or replace the published PDF. A maintainer can still make
+  a reviewed correction from a same-repository branch.
 - See [CONTRIBUTING.md](CONTRIBUTING.md) for the browser-only student process.
 
 ## Validate submissions locally
@@ -39,8 +42,10 @@ Run the dependency-free unit tests with:
 python3 -m unittest discover -s tests -v
 ```
 
-The GitHub Actions submission check also validates PDF structure and renders
-every page with `qpdf` and Poppler before a slides pull request can be merged.
+The GitHub Actions submission check also validates PDF structure, rejects
+encryption, JavaScript, and embedded files, and renders every page with `qpdf`
+and Poppler before a slides pull request can be merged. PDFs are not sent to
+OpenAI; the deterministic parser and renderer are the required technical gate.
 
 ## Maintainer merge checklist
 
@@ -48,16 +53,27 @@ every page with `qpdf` and Poppler before a slides pull request can be merged.
 - Confirm that the pull-request author is the student assigned to the record
   ID. The repository validates the record and file path, but GitHub accounts
   are not automatically mapped to student identities.
+- For a title-and-abstract pull request, keep it open until the automatic AI
+  comment appears or the AI workflow explicitly requests human review.
 - Review any requested human escalation, then squash-merge the pull request.
 
-## Optional AI review
+## Automatic AI review
 
-The **Review title and abstract (AI)** workflow is advisory and must be started
-manually by a maintainer for a specific pull-request number. It reads only the
-submitted title and abstract together with the immutable year in program, uses
-a fixed year-aware rubric and strict structured output, posts one clearly
-labeled comment, and never approves or merges a pull request. API errors and
-uncertain results request human review.
+After **Validate submission** succeeds, the **Review title and abstract (AI)**
+workflow runs automatically for a title-and-abstract pull request. It reads
+only the submitted title and abstract together with the immutable year in
+program, uses a fixed year-aware rubric and strict structured output, posts one
+clearly labeled comment, and never approves or merges a pull request. PDF and
+ordinary maintainer pull requests are skipped. API errors and uncertain results
+request human review. Manual dispatch remains available as a maintainer
+fallback.
+
+Once a successful review comment is recorded, the workflow remembers the exact
+Git blob it reviewed. Normal re-runs for that file version do not make another
+OpenAI request. A substantive edit creates a new blob and receives fresh
+feedback. The workflow queue serializes review runs, though no external API can
+promise transactional exactly-once billing if a runner is interrupted between
+the API response and recording its GitHub comment.
 
 To enable it:
 
@@ -66,12 +82,15 @@ To enable it:
 2. In this repository, open **Settings → Secrets and variables → Actions → New
    repository secret** and create `OPENAI_API_KEY`. Never commit the key, put it
    in a pull request, or paste it into chat.
-3. After a title-and-abstract pull request passes deterministic validation,
-   open **Actions → Review title and abstract (AI) → Run workflow**, leave the
-   branch as `main`, and enter the pull-request number.
+3. No routine action is needed. After deterministic validation succeeds, the
+   trusted default-branch workflow reviews an eligible metadata submission.
+   To retry a failed service call manually, open **Actions → Review title and
+   abstract (AI) → Run workflow**, leave the branch as `main`, and enter the
+   pull-request number.
 
 The default model is `gpt-5.6-terra`. To choose another compatible Responses
 API model, create the repository variable `OPENAI_REVIEW_MODEL`; no variable is
-needed for the default.
+needed for the default. Keep a conservative project spending limit on the API
+key because the repository accepts public fork pull requests.
 
 GitHub Pages can also render future Markdown pages through Jekyll.
