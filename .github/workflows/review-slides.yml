@@ -129,7 +129,7 @@ jobs:
           )"
           IFS=$'\t' read -r submission_path change_status <<< "$changed_file"
 
-          if [[ ! "$submission_path" =~ ^assets/slides/fall-2026/(fall-2026-(0[1-9]|1[0-7]))\.pdf$ ]]; then
+          if [[ ! "$submission_path" =~ ^assets/slides/fall-2026/(fall-2026-(0[1-9]|1[0-8]))\.pdf$ ]]; then
             echo "review_eligible=false" >> "$GITHUB_OUTPUT"
             echo "The validated pull request is not a Fall 2026 slide submission."
             exit 0

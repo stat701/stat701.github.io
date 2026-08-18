@@ -42,11 +42,11 @@ REGISTRY_NAMESPACE = "stat701-student-account-registry"
 REGISTRY_MARKER_PREFIX = f"<!-- {REGISTRY_NAMESPACE}:v1:"
 REGISTRY_MARKER_SUFFIX = " -->"
 
-VALID_RECORD_IDS = tuple(f"fall-2026-{number:02d}" for number in range(1, 18))
+VALID_RECORD_IDS = tuple(f"fall-2026-{number:02d}" for number in range(1, 19))
 VALID_RECORD_ID_SET = frozenset(VALID_RECORD_IDS)
 # This is an explicitly instructor-owned demonstration slot, not a student
 # enrollment. All ordinary records still reject the registrar's own account.
-INSTRUCTOR_DEMO_RECORD_IDS = frozenset({"fall-2026-17"})
+INSTRUCTOR_DEMO_RECORD_IDS = frozenset({"fall-2026-17", "fall-2026-18"})
 EVENT_KEYS = frozenset(
     {
         "event",
