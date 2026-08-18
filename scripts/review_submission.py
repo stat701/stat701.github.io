@@ -1296,7 +1296,9 @@ def run_review(
             raise EligibilityError(
                 "Only the configured instructor account can register a student."
             )
-        if initial_pr.author_id == registrar_id:
+        if initial_pr.author_id == registrar_id and not submission_registry.is_instructor_demo_record(
+            submission.record_id
+        ):
             raise EligibilityError(
                 "The instructor account cannot be registered as a student owner."
             )

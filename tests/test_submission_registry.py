@@ -398,6 +398,29 @@ class RegistrationTests(unittest.TestCase):
                 )
             load.assert_not_called()
 
+    def test_instructor_demo_record_can_bind_the_registrar_account(self) -> None:
+        def post_response(**kwargs: object) -> dict[str, object]:
+            body = kwargs["payload"]["body"]  # type: ignore[index]
+            return {"id": 124, "user": trusted_bot(), "body": body}
+
+        with mock.patch(
+            "scripts.submission_registry.load_registry",
+            return_value=StudentRegistry(()),
+        ), mock.patch(
+            "scripts.submission_registry._github_request", side_effect=post_response
+        ):
+            result = register_owner(
+                **self.registration_kwargs(
+                    record_id="fall-2026-17",
+                    github_user_id=AUTHORIZED_MAINTAINER_ID,
+                    github_login="volfovsky",
+                )
+            )  # type: ignore[arg-type]
+
+        self.assertTrue(result.created)
+        self.assertEqual(result.owner.record_id, "fall-2026-17")
+        self.assertEqual(result.owner.github_user_id, AUTHORIZED_MAINTAINER_ID)
+
 
 if __name__ == "__main__":
     unittest.main()
