@@ -41,7 +41,7 @@ REGISTRY_NAMESPACE = "stat701-student-account-registry"
 REGISTRY_MARKER_PREFIX = f"<!-- {REGISTRY_NAMESPACE}:v1:"
 REGISTRY_MARKER_SUFFIX = " -->"
 
-VALID_RECORD_IDS = tuple(f"fall-2026-{number:02d}" for number in range(1, 17))
+VALID_RECORD_IDS = tuple(f"fall-2026-{number:02d}" for number in range(1, 18))
 VALID_RECORD_ID_SET = frozenset(VALID_RECORD_IDS)
 EVENT_KEYS = frozenset(
     {

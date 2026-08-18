@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 
-VALID_RECORD_IDS = tuple(f"fall-2026-{number:02d}" for number in range(1, 17))
+VALID_RECORD_IDS = tuple(f"fall-2026-{number:02d}" for number in range(1, 18))
 VALID_RECORD_ID_SET = frozenset(VALID_RECORD_IDS)
 
 EXPECTED_FRONT_MATTER_FIELDS = (
