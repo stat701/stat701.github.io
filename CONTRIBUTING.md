@@ -10,6 +10,9 @@ and you do not need command-line Git.
 
 ## What kind of talk should I prepare?
 
+Each presentation should be no more than 20 minutes. We will then use 10–15
+minutes for discussion, questions, and constructive feedback.
+
 Your topic should reflect your stage in the program:
 
 - Third-year students should develop and present an idea that may grow into a
