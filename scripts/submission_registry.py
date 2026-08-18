@@ -43,6 +43,9 @@ REGISTRY_MARKER_SUFFIX = " -->"
 
 VALID_RECORD_IDS = tuple(f"fall-2026-{number:02d}" for number in range(1, 18))
 VALID_RECORD_ID_SET = frozenset(VALID_RECORD_IDS)
+# This is an explicitly instructor-owned demonstration slot, not a student
+# enrollment. All ordinary records still reject the registrar's own account.
+INSTRUCTOR_DEMO_RECORD_IDS = frozenset({"fall-2026-17"})
 EVENT_KEYS = frozenset(
     {
         "event",
@@ -160,6 +163,12 @@ def _require_record_id(value: object) -> str:
     return value
 
 
+def is_instructor_demo_record(record_id: str) -> bool:
+    """Return whether this schedule record intentionally permits the registrar."""
+
+    return record_id in INSTRUCTOR_DEMO_RECORD_IDS
+
+
 def _require_sha(value: object) -> str:
     if not isinstance(value, str) or not SHA_RE.fullmatch(value):
         raise RegistryTrustError("Registry field 'source_head_sha' is not a commit SHA.")
@@ -206,7 +215,9 @@ def _owner_from_payload(payload: object) -> RegisteredOwner:
     )
     if owner.authorized_by_user_id != AUTHORIZED_MAINTAINER_ID:
         raise RegistryTrustError("Registry event was not authorized by an allowed user ID.")
-    if owner.github_user_id == AUTHORIZED_MAINTAINER_ID:
+    if owner.github_user_id == AUTHORIZED_MAINTAINER_ID and not is_instructor_demo_record(
+        owner.record_id
+    ):
         raise RegistryTrustError("The authorized maintainer account cannot own a student record.")
     return owner
 
@@ -503,7 +514,9 @@ def register_owner(
         raise RegistrationError("Workflow actor is not an authorized registrar.")
     if github_user_type != "User":
         raise RegistrationError("Only an individual GitHub user can own a record.")
-    if github_user_id == AUTHORIZED_MAINTAINER_ID:
+    if github_user_id == AUTHORIZED_MAINTAINER_ID and not is_instructor_demo_record(
+        record_id
+    ):
         raise RegistrationError("The authorized maintainer cannot be a student owner.")
 
     try:
