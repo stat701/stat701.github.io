@@ -81,8 +81,9 @@ not need organization or repository access.
 Bindings are stored as append-only, Actions-bot-authored comments in the
 locked [student account registry issue](https://github.com/stat701/stat701.github.io/issues/7).
 Keep that issue open and locked, preserve its exact title, and do not edit or
-delete its machine-generated comments; all ownership checks fail closed if the
-ledger cannot be verified.
+delete its machine-generated comments. The registration workflow briefly
+unlocks it only long enough for the Actions bot to append a comment, then
+relocks it; all ownership checks fail closed if the ledger cannot be verified.
 
 Once registered, new versions pushed to that open title pull request, the
 student's later PDF pull request, and permitted revisions to that PDF are

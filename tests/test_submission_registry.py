@@ -323,6 +323,8 @@ class RegistrationTests(unittest.TestCase):
 
     def test_success_appends_exact_event_and_verifies_bot_response(self) -> None:
         def post_response(**kwargs: object) -> dict[str, object]:
+            if kwargs["method"] != "POST":
+                return {}
             body = kwargs["payload"]["body"]  # type: ignore[index]
             return {"id": 123, "user": trusted_bot(), "body": body}
 
@@ -335,7 +337,9 @@ class RegistrationTests(unittest.TestCase):
             result = register_owner(**self.registration_kwargs())  # type: ignore[arg-type]
 
         self.assertTrue(result.created)
-        call = request.call_args.kwargs
+        call = next(
+            call.kwargs for call in request.call_args_list if call.kwargs["method"] == "POST"
+        )
         self.assertEqual(call["method"], "POST")
         self.assertEqual(
             call["endpoint"],
@@ -374,6 +378,8 @@ class RegistrationTests(unittest.TestCase):
 
     def test_registrar_rename_is_allowed_and_recorded_for_audit(self) -> None:
         def post_response(**kwargs: object) -> dict[str, object]:
+            if kwargs["method"] != "POST":
+                return {}
             return {"user": trusted_bot(), "body": kwargs["payload"]["body"]}  # type: ignore[index]
 
         with mock.patch(
@@ -400,6 +406,8 @@ class RegistrationTests(unittest.TestCase):
 
     def test_instructor_demo_record_can_bind_the_registrar_account(self) -> None:
         def post_response(**kwargs: object) -> dict[str, object]:
+            if kwargs["method"] != "POST":
+                return {}
             body = kwargs["payload"]["body"]  # type: ignore[index]
             return {"id": 124, "user": trusted_bot(), "body": body}
 

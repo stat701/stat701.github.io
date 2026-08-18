@@ -28,6 +28,7 @@ GITHUB_API_VERSION = "2022-11-28"
 FIXED_REPOSITORY = "stat701/stat701.github.io"
 REGISTRY_ISSUE_NUMBER = 7
 REGISTRY_ISSUE_TITLE = "STA 701S student account registry (machine managed)"
+REGISTRY_LOCK_REASON = "resolved"
 
 GITHUB_ACTIONS_BOT_ID = 41_898_282
 GITHUB_ACTIONS_BOT_LOGIN = "github-actions[bot]"
@@ -312,6 +313,9 @@ def _github_request(
         raise RegistryTrustError("GitHub API request failed.") from exc
     if len(raw) > 2_000_000:
         raise RegistryTrustError("GitHub API response exceeded the safety limit.")
+    if not raw:
+        # GitHub returns 204 No Content for issue lock/unlock operations.
+        return {}
     try:
         return json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -390,6 +394,21 @@ def load_registry(*, token: str, repository: str) -> StudentRegistry:
         if len(comments) < 100:
             return _validated_registry(owners)
     raise RegistryTrustError("Registry has too many comments to validate safely.")
+
+
+def _set_registry_lock(*, token: str, repository: str, locked: bool) -> None:
+    """Temporarily unlock the issue for the bot, then restore its lock."""
+
+    endpoint = f"/repos/{repository}/issues/{REGISTRY_ISSUE_NUMBER}/lock"
+    if locked:
+        _github_request(
+            token=token,
+            method="PUT",
+            endpoint=endpoint,
+            payload={"lock_reason": REGISTRY_LOCK_REASON},
+        )
+    else:
+        _github_request(token=token, method="DELETE", endpoint=endpoint)
 
 
 def resolve_owner(
@@ -556,12 +575,19 @@ def register_owner(
         )
 
     body = format_registry_marker(proposed)
-    posted = _github_request(
-        token=token,
-        method="POST",
-        endpoint=f"/repos/{repository}/issues/{REGISTRY_ISSUE_NUMBER}/comments",
-        payload={"body": body},
-    )
+    posted: object = {}
+    _set_registry_lock(token=token, repository=repository, locked=False)
+    try:
+        posted = _github_request(
+            token=token,
+            method="POST",
+            endpoint=f"/repos/{repository}/issues/{REGISTRY_ISSUE_NUMBER}/comments",
+            payload={"body": body},
+        )
+    finally:
+        # Keep the canonical issue locked between machine writes. The exact bot
+        # identity and body are still verified below after the relock succeeds.
+        _set_registry_lock(token=token, repository=repository, locked=True)
     if not isinstance(posted, Mapping) or not _is_trusted_bot(posted.get("user")):
         raise RegistryTrustError(
             "GitHub did not attribute the registry event to the trusted Actions bot."
