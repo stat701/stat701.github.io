@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 
-VALID_RECORD_IDS = tuple(f"fall-2026-{number:02d}" for number in range(1, 18))
+VALID_RECORD_IDS = tuple(f"fall-2026-{number:02d}" for number in range(1, 19))
 VALID_RECORD_ID_SET = frozenset(VALID_RECORD_IDS)
 
 EXPECTED_FRONT_MATTER_FIELDS = (
@@ -40,11 +40,11 @@ EXPECTED_FRONT_MATTER_FIELDS = (
 )
 
 TALK_PATH_RE = re.compile(
-    r"\A_talks/(?P<record_id>fall-2026-(?:0[1-9]|1[0-7]))\.md\Z"
+    r"\A_talks/(?P<record_id>fall-2026-(?:0[1-9]|1[0-8]))\.md\Z"
 )
 SLIDES_PATH_RE = re.compile(
     r"\Aassets/slides/fall-2026/"
-    r"(?P<record_id>fall-2026-(?:0[1-9]|1[0-7]))\.pdf\Z"
+    r"(?P<record_id>fall-2026-(?:0[1-9]|1[0-8]))\.pdf\Z"
 )
 FRONT_MATTER_LINE_RE = re.compile(r"\A([A-Za-z][A-Za-z0-9_-]*): (.*)\Z")
 HTML_COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
@@ -539,7 +539,7 @@ def validate_submission(
             "The submission path is not valid. Use exactly "
             "'_talks/fall-2026-XX.md' or "
             "'assets/slides/fall-2026/fall-2026-XX.pdf' with an assigned ID "
-            "from 01 through 17."
+            "from 01 through 18."
         )
 
     if talk_match is not None:
