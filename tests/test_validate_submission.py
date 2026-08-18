@@ -345,6 +345,23 @@ class RepositoryDiffTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "not valid"):
             validate_submission(self.repository.path, self.base, head)
 
+    def test_maintainer_can_add_a_new_talk_record(self) -> None:
+        self.repository.write_text(
+            "_talks/fall-2026-18.md",
+            "---\nrecord_id: fall-2026-18\nspeaker: 'A Student'\n"
+            "date: 2026-08-24\norder: 2\nyear_in_program: 3\n"
+            "semester: fall-2026\ntitle: \"An interesting idea\"\n---\n\n"
+            "This is a sufficiently long abstract explaining the statistical idea.\n",
+        )
+        head = self.repository.commit("Add a scheduled talk record")
+
+        result = validate_submission(
+            self.repository.path, self.base, head, allow_new_records=True
+        )
+
+        self.assertEqual(result.submission_type, "metadata")
+        self.assertEqual(result.record_id, "fall-2026-18")
+
     def test_non_submission_change_is_ignored(self) -> None:
         self.repository.write_text("maintainer-notes.txt", "ordinary site work\n")
         head = self.repository.commit("Update maintainer notes")
