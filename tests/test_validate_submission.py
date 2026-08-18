@@ -351,7 +351,7 @@ class RepositoryDiffTests(unittest.TestCase):
             "---\nrecord_id: fall-2026-18\nspeaker: 'A Student'\n"
             "date: 2026-08-24\norder: 2\nyear_in_program: 3\n"
             "semester: fall-2026\ntitle: \"An interesting idea\"\n---\n\n"
-            "This is a sufficiently long abstract explaining the statistical idea.\n",
+            "This is a sufficiently long abstract explaining the statistical idea clearly to readers.\n",
         )
         head = self.repository.commit("Add a scheduled talk record")
 
