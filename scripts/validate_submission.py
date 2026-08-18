@@ -503,6 +503,7 @@ def validate_submission(
     head: str,
     *,
     allow_published_updates: bool = False,
+    allow_new_records: bool = False,
 ) -> ValidationResult:
     """Validate the submission diff and return normalized submission metadata."""
 
@@ -543,6 +544,24 @@ def validate_submission(
         )
 
     if talk_match is not None:
+        if change.status == "A" and allow_new_records:
+            record_id = talk_match.group("record_id")
+            head_bytes = _read_blob(
+                repo_path, head_commit, change.path, max_bytes=MAX_METADATA_BYTES
+            )
+            head_text = _decode_metadata(head_bytes, change.path)
+            validate_talk_document(
+                base_text=head_text,
+                head_text=head_text,
+                expected_record_id=record_id,
+                allow_completed_base=True,
+            )
+            return ValidationResult(
+                submission_type="metadata",
+                path=change.path,
+                record_id=record_id,
+                message=f"Valid maintainer-created talk record for {record_id}.",
+            )
         if change.status != "M":
             raise ValidationError(
                 "A title-and-abstract submission must modify its existing talk "
@@ -638,6 +657,11 @@ def _build_argument_parser() -> argparse.ArgumentParser:
             "already-published metadata or replace an already-published PDF"
         ),
     )
+    parser.add_argument(
+        "--allow-new-records",
+        action="store_true",
+        help="Allow a trusted same-repository maintainer to add a scheduled talk record.",
+    )
     return parser
 
 
@@ -670,6 +694,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.base,
             arguments.head,
             allow_published_updates=arguments.allow_published_updates,
+            allow_new_records=arguments.allow_new_records,
         )
     except ValidationError as error:
         print(f"Submission validation failed: {error}", file=sys.stderr)
