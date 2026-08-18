@@ -75,7 +75,7 @@ SHA_RE = re.compile(r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 MODEL_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 LOGIN_RE = re.compile(r"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\Z")
 TALK_PATH_RE = re.compile(
-    r"\A_talks/(?P<record_id>fall-2026-(?:0[1-9]|1[0-6]))\.md\Z"
+    r"\A_talks/(?P<record_id>fall-2026-(?:0[1-9]|1[0-7]))\.md\Z"
 )
 CONTROL_CHARACTER_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
