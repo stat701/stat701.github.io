@@ -217,7 +217,7 @@ layout: null
           </div>
         </div>
 
-        {% assign fall_talks = site.talks | where: "semester", "fall-2026" | sort: "record_id" %}
+        {% assign fall_talks = site.talks | where: "semester", "fall-2026" | sort: "date" %}
         {% assign current_session = "" %}
         <ol class="schedule-list" role="list">
           {% for talk in fall_talks %}
