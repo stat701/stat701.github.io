@@ -338,7 +338,7 @@ class RepositoryDiffTests(unittest.TestCase):
 
     def test_unknown_record_id_is_rejected(self) -> None:
         self.repository.write_bytes(
-            "assets/slides/fall-2026/fall-2026-17.pdf", fake_pdf()
+            "assets/slides/fall-2026/fall-2026-18.pdf", fake_pdf()
         )
         head = self.repository.commit("Use an unknown record ID")
 
