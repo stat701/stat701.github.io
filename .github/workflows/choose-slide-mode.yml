@@ -1,0 +1,75 @@
+name: Choose slide delivery mode
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: read
+
+jobs:
+  choose:
+    if: >-
+      github.repository == 'stat701/stat701.github.io' &&
+      github.event.issue.pull_request &&
+      (startsWith(github.event.comment.body, '/slides public') ||
+      startsWith(github.event.comment.body, '/slides private'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.ORG_REPO_ADMIN_TOKEN }}
+
+      - name: Process the choice
+        env:
+          GH_TOKEN: ${{ secrets.ORG_REPO_ADMIN_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mode=public
+          [[ "$COMMENT_BODY" == "/slides private"* ]] && mode=private
+          pr_json="$(gh api "/repos/$REPOSITORY/pulls/$PR_NUMBER")"
+          author_id="$(jq -r '.user.id' <<<"$pr_json")"
+          author_login="$(jq -r '.user.login' <<<"$pr_json")"
+          author_type="$(jq -r '.user.type' <<<"$pr_json")"
+          head_repo="$(jq -r '.head.repo.full_name' <<<"$pr_json")"
+          mapfile -t paths < <(gh api --paginate "/repos/$REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[].filename')
+          if [[ "${#paths[@]}" -ne 1 || ! "${paths[0]}" =~ ^_talks/(fall-2026-[0-9]{2})\.md$ ]]; then
+            gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body "Slide mode choice ignored: the title PR must change exactly one assigned talk file."
+            exit 1
+          fi
+          record_id="${BASH_REMATCH[1]}"
+          decision="$(python scripts/submission_registry.py check-pr --token-env GH_TOKEN --repository "$REPOSITORY" --record-id "$record_id" --submission-type metadata --author-id "$author_id" --author-login "$author_login" --author-type "$author_type" --head-repository "$head_repo")"
+          [[ "$(jq -r '.status' <<<"$decision")" == "owner_match" ]] || {
+            gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body "Slide mode choice rejected: only the registered student may choose the delivery mode."
+            exit 1
+          }
+          if [[ "$mode" == private ]]; then
+            private_repo="stat701/private-slides-$record_id"
+            gh repo view "$private_repo" >/dev/null 2>&1 || gh repo create "$private_repo" --private --description "Private STA 701S slides for $record_id" --disable-issues --disable-wiki
+            gh api --method PUT "/repos/$private_repo/collaborators/$author_login" -f permission=push >/dev/null
+            tmp="$(mktemp -d)"
+            gh repo clone "$private_repo" "$tmp/repo" -- --depth 1
+            cp -R templates/private-slides/. "$tmp/repo/"
+            git -C "$tmp/repo" add .
+            git -C "$tmp/repo" diff --cached --quiet || git -C "$tmp/repo" -c user.name='STA 701S bot' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Initialize private STA 701S slides repository'
+            git -C "$tmp/repo" push origin HEAD:main
+          fi
+          python scripts/set_slide_mode.py --record-id "$record_id" --mode "$mode"
+          git config user.name 'STA 701S bot'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add _data/slide_modes.yml
+          git commit -m "Set $record_id slide delivery mode to $mode"
+          git push origin main
+          if [[ "$mode" == private ]]; then
+            message="Private slides enabled. Upload the PDF in https://github.com/$private_repo and open a PR for instructor review."
+          else
+            message="Public slides enabled. Submit the PDF through the public STA 701S repository workflow."
+          fi
+          gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body "$message"

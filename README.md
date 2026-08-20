@@ -47,6 +47,22 @@ encryption, JavaScript, and embedded files, and renders every page with `qpdf`
 and Poppler before a slides pull request can be merged. This deterministic
 technical gate is separate from the advisory semantic review described below.
 
+## Public or private slide delivery
+
+After the title/abstract review, a registered student can comment `/slides public`
+or `/slides private` on the title pull request. Public delivery uses the normal
+PDF pull request and website link. Private delivery creates one private
+repository named `private-slides-<record-id>` in the organization, invites the
+registered student with write access, and marks the public calendar entry as
+"Slides reviewed privately" without copying or linking the PDF.
+
+The `choose-slide-mode.yml` workflow requires an organization administrator
+token stored as the Actions secret `ORG_REPO_ADMIN_TOKEN`. The token must be
+able to create private repositories in the `stat701` organization and manage
+collaborators. Do not use or print the token in logs. The public repository's
+`_data/slide_modes.yml` contains only delivery modes, never private slide
+content.
+
 ## Maintainer merge checklist
 
 - On a student's first title-and-abstract pull request, confirm that
