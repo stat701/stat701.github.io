@@ -504,6 +504,7 @@ def validate_submission(
     *,
     allow_published_updates: bool = False,
     allow_new_records: bool = False,
+    allow_schedule_changes: bool = False,
 ) -> ValidationResult:
     """Validate the submission diff and return normalized submission metadata."""
 
@@ -544,6 +545,14 @@ def validate_submission(
         )
 
     if talk_match is not None:
+        if change.status == "D" and allow_schedule_changes:
+            record_id = talk_match.group("record_id")
+            return ValidationResult(
+                submission_type="metadata",
+                path=change.path,
+                record_id=record_id,
+                message=f"Valid maintainer removal of scheduled record {record_id}.",
+            )
         if change.status == "A" and allow_new_records:
             record_id = talk_match.group("record_id")
             head_bytes = _read_blob(
@@ -662,6 +671,11 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Allow a trusted same-repository maintainer to add a scheduled talk record.",
     )
+    parser.add_argument(
+        "--allow-schedule-changes",
+        action="store_true",
+        help="Allow a trusted same-repository maintainer to remove a scheduled record.",
+    )
     return parser
 
 
@@ -695,6 +709,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.head,
             allow_published_updates=arguments.allow_published_updates,
             allow_new_records=arguments.allow_new_records,
+            allow_schedule_changes=arguments.allow_schedule_changes,
         )
     except ValidationError as error:
         print(f"Submission validation failed: {error}", file=sys.stderr)
