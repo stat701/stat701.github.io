@@ -95,6 +95,10 @@ jobs:
               | grep --quiet -- '--allow-new-records'; then
               validator_arguments+=(--allow-new-records)
             fi
+            if python ../trusted/scripts/validate_submission.py --help \
+              | grep --quiet -- '--allow-schedule-changes'; then
+              validator_arguments+=(--allow-schedule-changes)
+            fi
           fi
           python ../trusted/scripts/validate_submission.py "${validator_arguments[@]}"
 

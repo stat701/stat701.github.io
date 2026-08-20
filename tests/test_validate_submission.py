@@ -433,6 +433,17 @@ class RepositoryDiffTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "must modify"):
             validate_submission(self.repository.path, self.base, head)
 
+    def test_maintainer_can_remove_a_scheduled_record(self) -> None:
+        (self.repository.path / "_talks/fall-2026-01.md").unlink()
+        head = self.repository.commit("Remove an unassigned schedule slot")
+
+        result = validate_submission(
+            self.repository.path, self.base, head, allow_schedule_changes=True
+        )
+
+        self.assertEqual(result.submission_type, "metadata")
+        self.assertEqual(result.record_id, "fall-2026-01")
+
 
 if __name__ == "__main__":
     unittest.main()
