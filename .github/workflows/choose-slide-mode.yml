@@ -58,6 +58,14 @@ jobs:
             gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body "Slide mode choice rejected: only the registered student may choose the delivery mode."
             exit 1
           }
+          if [[ "$mode" == public ]]; then
+            gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body "Public slides enabled. Submit the PDF through the public STA 701S repository workflow."
+            exit 0
+          fi
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::Private slide delivery requires the ORG_REPO_ADMIN_TOKEN Actions secret."
+            exit 1
+          fi
           if [[ "$mode" == private ]]; then
             private_repo="stat701/private-slides-$record_id"
             gh repo view "$private_repo" >/dev/null 2>&1 || gh repo create "$private_repo" --private --description "Private STA 701S slides for $record_id" --disable-issues --disable-wiki
@@ -70,14 +78,13 @@ jobs:
             git -C "$tmp/repo" push origin HEAD:main
           fi
           python scripts/set_slide_mode.py --record-id "$record_id" --mode "$mode"
+          branch="bot/slide-mode-$record_id-${GITHUB_RUN_ID}"
+          git switch -c "$branch"
           git config user.name 'STA 701S bot'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add _data/slide_modes.yml
           git commit -m "Set $record_id slide delivery mode to $mode"
-          git push origin main
-          if [[ "$mode" == private ]]; then
-            message="Private slides enabled. Upload the PDF in https://github.com/$private_repo and open a PR for instructor review."
-          else
-            message="Public slides enabled. Submit the PDF through the public STA 701S repository workflow."
-          fi
-          gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body "$message"
+          git push origin "$branch"
+          mode_pr="$(gh pr create --repo "$REPOSITORY" --base main --head "$branch" --title "Set $record_id slides to private" --body "Machine-generated delivery-mode update for $record_id.")"
+          gh pr merge "$mode_pr" --repo "$REPOSITORY" --squash --admin --delete-branch
+          gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body "Private slides enabled. Upload the PDF in https://github.com/$private_repo and open a PR for instructor review."
