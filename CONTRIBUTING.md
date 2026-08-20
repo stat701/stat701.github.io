@@ -5,6 +5,12 @@ Each speaker makes two separate submissions through GitHub:
 1. Submit a title and abstract as soon as possible.
 2. Submit the final slides as one PDF before the presentation.
 
+After your title and abstract receive feedback, choose either public or
+private slide delivery by commenting `/slides public` or `/slides private` on
+your title pull request. Public slides follow the workflow below. A private
+choice creates a private repository for your talk, where you upload the PDF
+for instructor review; private slides are never copied to this public site.
+
 You will use GitHub's website for both submissions. You will not submit code,
 and you do not need command-line Git.
 

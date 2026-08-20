@@ -241,6 +241,7 @@ layout: null
             {% endif %}
 
             {% assign talk_title = talk.title | default: "" | strip %}
+            {% assign slide_mode = site.data.slide_modes[talk.record_id] | default: "public" %}
             {% assign slide_path = "/assets/slides/" | append: talk.semester | append: "/" | append: talk.record_id | append: ".pdf" %}
             {% assign slides_available = false %}
             {% for static_file in site.static_files %}
@@ -258,7 +259,7 @@ layout: null
 
                 {% if talk_title != "" %}
                   <h4 class="schedule-speaker__title">
-                    {% if slides_available %}
+                    {% if slides_available and slide_mode == "public" %}
                       <a href="{{ slide_path | relative_url }}" target="_blank" rel="noopener noreferrer" aria-label="{{ talk_title | escape }} (PDF, opens in a new tab)">{{ talk_title | escape }}</a>
                     {% else %}
                       {{ talk_title | escape }}
@@ -273,7 +274,9 @@ layout: null
                 {% endif %}
 
                 <div class="schedule-speaker__actions">
-                  {% if slides_available %}
+                  {% if slide_mode == "private" %}
+                    <p class="talk-link talk-link--private">Slides reviewed privately; no public PDF is available.</p>
+                  {% elsif slides_available %}
                     <a class="talk-link talk-link--pdf" href="{{ slide_path | relative_url }}" target="_blank" rel="noopener noreferrer" aria-label="Slides for {{ talk.speaker | escape }} (PDF, opens in a new tab)">Slides (PDF) <span aria-hidden="true">↗</span></a>
                   {% elsif talk_title != "" %}
                     <a class="talk-link" href="https://github.com/stat701/stat701.github.io/blob/main/CONTRIBUTING.md#second-pull-request-pdf-slides">Submit PDF slides <span aria-hidden="true">↗</span></a>

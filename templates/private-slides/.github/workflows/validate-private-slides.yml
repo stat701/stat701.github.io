@@ -1,0 +1,32 @@
+name: Validate private slides
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check exactly one readable PDF
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --name-only --diff-filter=AM "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")
+          if [[ "${#changed[@]}" -ne 1 || ! "${changed[0]}" =~ \.pdf$ ]]; then
+            echo "A private slides PR must change exactly one PDF."
+            exit 1
+          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qpdf poppler-utils
+          qpdf --check "${changed[0]}"
+          pdfinfo "${changed[0]}" >/dev/null
+          mkdir -p /tmp/rendered
+          pdftoppm -f 1 -l 200 -png "${changed[0]}" /tmp/rendered/page >/dev/null
+          test -n "$(find /tmp/rendered -type f -name '*.png' -print -quit)"
