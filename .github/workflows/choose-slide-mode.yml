@@ -43,6 +43,9 @@ jobs:
           if [[ -z "${GH_TOKEN:-}" ]]; then
             export GH_TOKEN="$FALLBACK_GITHUB_TOKEN"
           fi
+          # `gh repo clone` authenticates through GH_TOKEN, but the nested
+          # repository's plain Git remote needs the same credential helper.
+          gh auth setup-git
           pr_json="$(gh api "/repos/$REPOSITORY/pulls/$PR_NUMBER")"
           author_id="$(jq -r '.user.id' <<<"$pr_json")"
           author_login="$(jq -r '.user.login' <<<"$pr_json")"
