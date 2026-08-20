@@ -14,6 +14,7 @@ jobs:
     if: >-
       github.repository == 'stat701/stat701.github.io' &&
       github.event.issue.pull_request &&
+      github.event.issue.state == 'open' &&
       (startsWith(github.event.comment.body, '/slides public') ||
       startsWith(github.event.comment.body, '/slides private'))
     runs-on: ubuntu-latest
