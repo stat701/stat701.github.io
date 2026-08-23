@@ -1,0 +1,20 @@
+---
+layout: null
+permalink: /schedule.json
+---
+{
+  "talks": [
+    {% assign talks = site.talks | sort: "date" %}
+    {% for talk in talks %}
+    {
+      "record_id": {{ talk.record_id | jsonify }},
+      "date": {{ talk.date | date: "%Y-%m-%d" | jsonify }},
+      "order": {{ talk.order | jsonify }},
+      "speaker": {{ talk.speaker | jsonify }},
+      "title": {{ talk.title | default: "" | jsonify }},
+      "abstract": {{ talk.content | strip_html | strip | jsonify }},
+      "url": {{ "https://stat701.github.io/#" | append: talk.record_id | jsonify }}
+    }{% unless forloop.last %},{% endunless %}
+    {% endfor %}
+  ]
+}
