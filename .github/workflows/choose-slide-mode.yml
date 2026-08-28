@@ -3,6 +3,8 @@ name: Choose slide delivery mode
 on:
   issue_comment:
     types: [created]
+  pull_request_review:
+    types: [submitted]
 
 permissions:
   contents: write
@@ -13,10 +15,21 @@ jobs:
   choose:
     if: >-
       github.repository == 'stat701/stat701.github.io' &&
-      github.event.issue.pull_request &&
-      github.event.issue.state == 'open' &&
-      (startsWith(github.event.comment.body, '/slides public') ||
-      startsWith(github.event.comment.body, '/slides private'))
+      (
+        (
+          github.event_name == 'issue_comment' &&
+          github.event.issue.pull_request &&
+          github.event.issue.state == 'open' &&
+          (startsWith(github.event.comment.body, '/slides public') ||
+          startsWith(github.event.comment.body, '/slides private'))
+        ) ||
+        (
+          github.event_name == 'pull_request_review' &&
+          github.event.review.state == 'approved' &&
+          github.event.review.user.id == 12053767 &&
+          github.event.review.user.type == 'User'
+        )
+      )
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,25 +41,50 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.ORG_REPO_ADMIN_TOKEN }}
           FALLBACK_GITHUB_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.issue.number }}
+          REVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
           COMMENT_BODY: ${{ github.event.comment.body }}
         shell: bash
         run: |
           set -euo pipefail
-          mode=public
-          [[ "$COMMENT_BODY" == "/slides private"* ]] && mode=private
-          if [[ "$mode" == private && -z "${GH_TOKEN:-}" ]]; then
-            echo "::error::Private slide delivery requires the ORG_REPO_ADMIN_TOKEN Actions secret."
-            exit 1
-          fi
           if [[ -z "${GH_TOKEN:-}" ]]; then
             export GH_TOKEN="$FALLBACK_GITHUB_TOKEN"
           fi
           # `gh repo clone` authenticates through GH_TOKEN, but the nested
           # repository's plain Git remote needs the same credential helper.
           gh auth setup-git
+          if [[ "$EVENT_NAME" == "pull_request_review" ]]; then
+            PR_NUMBER="$REVIEW_PR_NUMBER"
+          fi
           pr_json="$(gh api "/repos/$REPOSITORY/pulls/$PR_NUMBER")"
+          mode=public
+          if [[ "$EVENT_NAME" == "issue_comment" ]]; then
+            [[ "$COMMENT_BODY" == "/slides private"* ]] && mode=private
+          else
+            pr_body="$(jq -r '.body // ""' <<<"$pr_json")"
+            public_checked=false
+            private_checked=false
+            grep --quiet --ignore-case --extended-regexp \
+              '^[[:space:]]*-[[:space:]]*\[[xX]\][[:space:]]*I choose \*\*public\*\* slide delivery[:.]' \
+              <<<"$pr_body" && public_checked=true
+            grep --quiet --ignore-case --extended-regexp \
+              '^[[:space:]]*-[[:space:]]*\[[xX]\][[:space:]]*I choose \*\*private\*\* slide delivery[:.]' \
+              <<<"$pr_body" && private_checked=true
+            if [[ "$public_checked" == true && "$private_checked" == false ]]; then
+              mode=public
+            elif [[ "$public_checked" == false && "$private_checked" == true ]]; then
+              mode=private
+            else
+              gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body "Please check exactly one slide-delivery option in the pull-request checklist: public or private."
+              exit 1
+            fi
+          fi
+          if [[ "$mode" == private && -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::Private slide delivery requires the ORG_REPO_ADMIN_TOKEN Actions secret."
+            exit 1
+          fi
           author_id="$(jq -r '.user.id' <<<"$pr_json")"
           author_login="$(jq -r '.user.login' <<<"$pr_json")"
           author_type="$(jq -r '.user.type' <<<"$pr_json")"

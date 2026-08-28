@@ -5,11 +5,14 @@ Each speaker makes two separate submissions through GitHub:
 1. Submit a title and abstract as soon as possible.
 2. Submit the final slides as one PDF before the presentation.
 
-After your title and abstract receive feedback, choose either public or
-private slide delivery by commenting `/slides public` or `/slides private` on
-your title pull request. Public slides follow the workflow below. A private
-choice creates a private repository for your talk, where you upload the PDF
-for instructor review; private slides are never copied to this public site.
+When you open your title-and-abstract pull request, choose exactly one slide
+delivery option in the pull-request checklist. After the instructor approves
+that pull request, GitHub Actions will configure the selected mode. Public
+slides follow the workflow below. A private choice creates a private
+repository for your talk, where you upload the PDF for instructor review;
+private slides are never copied to this public site. The `/slides public` and
+`/slides private` comments remain available if the checklist needs to be
+corrected while the pull request is open.
 
 You will use GitHub's website for both submissions. You will not submit code,
 and you do not need command-line Git.
