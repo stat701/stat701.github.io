@@ -38,6 +38,10 @@ For a **title and abstract** submission:
       after this pull request is merged.
 - [ ] I understand that the instructor must verify and register my GitHub
       account before the first AI review runs.
+- [ ] I choose **public** slide delivery: my PDF will be published on the
+      course website.
+- [ ] I choose **private** slide delivery: my PDF will be reviewed in a
+      private repository and will not be published.
 
 For a **slides** submission:
 
