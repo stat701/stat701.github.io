@@ -59,6 +59,16 @@ jobs:
             PR_NUMBER="$REVIEW_PR_NUMBER"
           fi
           pr_json="$(gh api "/repos/$REPOSITORY/pulls/$PR_NUMBER")"
+          if [[ "$EVENT_NAME" == "pull_request_review" ]]; then
+            # Approval events also fire for PDF PRs. This workflow only
+            # configures delivery for an open title-and-abstract PR.
+            [[ "$(jq -r '.state' <<<"$pr_json")" == "open" ]] || exit 0
+            mapfile -t review_paths < <(gh api --paginate "/repos/$REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[].filename')
+            if [[ "${#review_paths[@]}" -ne 1 || ! "${review_paths[0]}" =~ ^_talks/(fall-2026-[0-9]{2})\.md$ ]]; then
+              echo "Approval is not for a title-and-abstract submission; skipping slide-mode configuration."
+              exit 0
+            fi
+          fi
           mode=public
           if [[ "$EVENT_NAME" == "issue_comment" ]]; then
             [[ "$COMMENT_BODY" == "/slides private"* ]] && mode=private
