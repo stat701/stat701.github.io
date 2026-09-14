@@ -3,30 +3,77 @@ name: Validate private slides
 on:
   pull_request:
     branches: [main]
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
 
 permissions:
   contents: read
 
+concurrency:
+  group: private-slides-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   validate:
+    name: Validate private slides
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the pull request as untrusted data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Check exactly one readable PDF
+          path: submission
+          persist-credentials: false
+
+      - name: Check out the trusted validator from the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          path: trusted
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+          repository: ${{ github.event.pull_request.base.repo.full_name }}
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install PDF validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes poppler-utils qpdf
+
+      - name: Validate the private slide PDF
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPOSITORY_NAME: ${{ github.event.repository.name }}
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t changed < <(git diff --name-only --diff-filter=AM "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")
-          if [[ "${#changed[@]}" -ne 1 || ! "${changed[0]}" =~ \.pdf$ ]]; then
-            echo "A private slides PR must change exactly one PDF."
+
+          if [[ ! "$REPOSITORY_NAME" =~ ^private-slides-(fall-2026-(0[1-9]|1[0-8]))$ ]]; then
+            echo "::error::Private slide repositories must be named private-slides-fall-2026-XX."
             exit 1
           fi
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq qpdf poppler-utils
-          qpdf --check "${changed[0]}"
-          pdfinfo "${changed[0]}" >/dev/null
-          mkdir -p /tmp/rendered
-          pdftoppm -f 1 -l 200 -png "${changed[0]}" /tmp/rendered/page >/dev/null
-          test -n "$(find /tmp/rendered -type f -name '*.png' -print -quit)"
+          record_id="${BASH_REMATCH[1]}"
+
+          if [[ ! -f trusted/scripts/validate_private_slides.py ]]; then
+            echo "::error::The trusted base commit does not contain the private slide validator."
+            exit 1
+          fi
+
+          git -C submission cat-file -e "${BASE_SHA}^{commit}"
+          git -C submission cat-file -e "${HEAD_SHA}^{commit}"
+          python trusted/scripts/validate_private_slides.py \
+            --repo submission \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --record-id "$record_id" \
+            --github-output "$GITHUB_OUTPUT"

@@ -275,7 +275,7 @@ layout: null
 
                 <div class="schedule-speaker__actions">
                   {% if slide_mode == "private" %}
-                    <p class="talk-link talk-link--private">Slides reviewed privately; no public PDF is available.</p>
+                    <p class="talk-link talk-link--private">Private slide delivery; no public PDF is available.</p>
                   {% elsif slides_available %}
                     <a class="talk-link talk-link--pdf" href="{{ slide_path | relative_url }}" target="_blank" rel="noopener noreferrer" aria-label="Slides for {{ talk.speaker | escape }} (PDF, opens in a new tab)">Slides (PDF) <span aria-hidden="true">↗</span></a>
                   {% elsif talk_title != "" %}
