@@ -6,7 +6,7 @@ Each speaker makes two separate submissions through GitHub:
 2. Submit the final slides as one PDF before the presentation.
 
 When you open your title-and-abstract pull request, choose exactly one slide
-delivery option in the pull-request checklist. After the instructor approves
+delivery option in the pull-request checklist. After the instructor merges
 that pull request, GitHub Actions will configure the selected mode. Your talk
 title and abstract are public either way. Public slides follow the public PDF
 workflow below. A private choice creates a private repository for your talk,

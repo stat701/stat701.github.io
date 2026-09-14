@@ -50,8 +50,8 @@ technical gate is separate from the advisory semantic review described below.
 ## Public or private slide delivery
 
 The student chooses exactly one slide-delivery option in the
-title-and-abstract pull-request checklist before instructor approval. When the
-instructor approves that title pull request, the workflow reads the checklist.
+title-and-abstract pull-request checklist before instructor review. When the
+instructor merges that title pull request, the workflow reads the checklist.
 A registered student or the instructor can also comment `/slides public` or
 `/slides private` while that pull request is open. The title and abstract
 remain public either way. Public delivery uses the normal PDF pull request and
@@ -67,6 +67,14 @@ able to create private repositories in the `stat701` organization and manage
 collaborators. Do not use or print the token in logs. The public repository's
 `_data/slide_modes.yml` contains only delivery modes, never private slide
 content.
+
+For a merged title PR whose setup failed or whose choice was corrected, the
+instructor can open **Actions → Choose slide delivery mode → Run workflow**,
+use `main`, and enter the title PR number. The retry checks that the instructor
+merged the PR and that its author owns the assigned record. Repository files
+are installed before the student is invited. Confirm that the repository is
+private and that GitHub lists either the registered student as a collaborator
+or a pending invitation to that account.
 
 The private repository template asks the student to accept the invitation with
 the registered GitHub account, create a branch in the private repository,
