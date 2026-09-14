@@ -12,6 +12,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/choose-slide-mode.yml"
+PUBLIC_CHOICE = "- [x] I choose **public** slide delivery: my PDF will be published on the"
+PRIVATE_CHOICE = "- [x] I choose **private** slide delivery: my PDF will be reviewed in a"
+PUBLIC_UNCHECKED = "- [ ] I choose **public** slide delivery: my PDF will be published on the"
+PRIVATE_UNCHECKED = "- [ ] I choose **private** slide delivery: my PDF will be reviewed in a"
 
 
 def extract_process_choice_script() -> str:
@@ -88,10 +92,18 @@ class SlideModeWorkflowTests(unittest.TestCase):
                     record("comment-body " + body)
                     sys.exit(0)
                 if args[:2] == ["pr", "create"]:
-                    print("https://github.com/stat701/stat701.github.io/pull/900")
+                    counter = Path(os.environ["STUB_LOG"]).with_suffix(".create-count")
+                    count = int(counter.read_text(encoding="utf-8")) if counter.exists() else 0
+                    count += 1
+                    counter.write_text(str(count), encoding="utf-8")
+                    print(f"https://github.com/stat701/stat701.github.io/pull/{899 + count}")
                     sys.exit(0)
                 if args[:2] == ["pr", "merge"]:
-                    sys.exit(0)
+                    counter = Path(os.environ["STUB_LOG"]).with_suffix(".merge-count")
+                    count = int(counter.read_text(encoding="utf-8")) if counter.exists() else 0
+                    count += 1
+                    counter.write_text(str(count), encoding="utf-8")
+                    sys.exit(1 if count <= int(os.environ.get("MERGE_FAILURES", "0")) else 0)
                 if args[:2] == ["pr", "close"]:
                     sys.exit(0)
                 if args[:2] == ["repo", "view"]:
@@ -126,6 +138,16 @@ class SlideModeWorkflowTests(unittest.TestCase):
                 log = Path(os.environ["STUB_LOG"])
                 with log.open("a", encoding="utf-8") as handle:
                     handle.write("git " + " ".join(args) + "\\n")
+                if args[:2] == ["switch", "-C"] and args[-1] == "origin/main":
+                    path = Path("_data/slide_modes.yml")
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    if os.environ.get("CURRENT_MODE") == "private":
+                        path.write_text("fall-2026-01: private\\n", encoding="utf-8")
+                    else:
+                        path.write_text(
+                            "# Maintainer-managed delivery modes. Omitted records are public by default.\\n",
+                            encoding="utf-8",
+                        )
                 if "diff" in args and "--cached" in args and "--quiet" in args:
                     target = "PRIVATE_TEMPLATE_DIFF" if any("/repo" in arg for arg in args) else "MANIFEST_DIFF"
                     sys.exit(1 if os.environ.get(target, "0") == "1" else 0)
@@ -181,11 +203,16 @@ class SlideModeWorkflowTests(unittest.TestCase):
             "ADMIN_TOKEN_AVAILABLE": "true",
             "EVENT_NAME": "issue_comment",
             "REPOSITORY": "stat701/stat701.github.io",
-            "PR_NUMBER": "5",
-            "REVIEW_PR_NUMBER": "",
+            "COMMENT_PR_NUMBER": "5",
+            "CLOSED_PR_NUMBER": "",
+            "DISPATCH_PR_NUMBER": "",
             "COMMENT_BODY": "/slides public",
             "COMMENT_AUTHOR_ID": "222",
             "COMMENT_AUTHOR_TYPE": "User",
+            "CLOSED_MERGED": "",
+            "CLOSED_MERGER_ID": "",
+            "CLOSED_MERGER_TYPE": "",
+            "DISPATCH_ACTOR_ID": "",
             "GITHUB_RUN_ID": "99",
             "PR_JSON": json_pull_request(),
             "FILES": "_talks/fall-2026-01.md",
@@ -193,6 +220,7 @@ class SlideModeWorkflowTests(unittest.TestCase):
             "PRIVATE_TEMPLATE_DIFF": "0",
             "CURRENT_MODE": "public",
             "MAIN_REF_EXISTS": "1",
+            "MERGE_FAILURES": "0",
         }
         env.update(overrides)
         manifest = self.work / "_data/slide_modes.yml"
@@ -252,14 +280,18 @@ class SlideModeWorkflowTests(unittest.TestCase):
         self.assertNotIn("scripts/set_slide_mode.py", log)
         self.assertNotIn("pr create", log)
 
-    def test_review_private_checklist_configures_private_delivery(self) -> None:
+    def test_merged_private_title_configures_private_delivery_without_approval(self) -> None:
         result = self.run_workflow(
-            EVENT_NAME="pull_request_review",
-            PR_NUMBER="",
-            REVIEW_PR_NUMBER="5",
+            EVENT_NAME="pull_request_target",
+            COMMENT_PR_NUMBER="",
+            CLOSED_PR_NUMBER="5",
+            CLOSED_MERGED="true",
+            CLOSED_MERGER_ID="12053767",
+            CLOSED_MERGER_TYPE="User",
             PR_JSON=json_pull_request(
-                body="- [ ] I choose **public** slide delivery: public repo\n"
-                "- [x] I choose **private** slide delivery: private repo"
+                body=f"{PUBLIC_UNCHECKED}\n{PRIVATE_CHOICE}",
+                state="closed",
+                merged=True,
             ),
             CURRENT_MODE="public",
             MANIFEST_DIFF="1",
@@ -269,22 +301,24 @@ class SlideModeWorkflowTests(unittest.TestCase):
         log = self.log_text()
         self.assertIn("repo view stat701/private-slides-fall-2026-01", log)
         self.assertIn("python scripts/set_slide_mode.py --record-id fall-2026-01 --mode private", log)
+        self.assertNotIn("pull_request_review", log)
         self.assertIn("Private slides enabled", log)
 
-    def test_review_ambiguous_checklist_fails(self) -> None:
+    def test_merged_ambiguous_checklist_fails(self) -> None:
         bodies = (
-            "- [x] I choose **public** slide delivery: public repo\n"
-            "- [x] I choose **private** slide delivery: private repo",
-            "- [ ] I choose **public** slide delivery: public repo\n"
-            "- [ ] I choose **private** slide delivery: private repo",
+            f"{PUBLIC_CHOICE}\n{PRIVATE_CHOICE}",
+            f"{PUBLIC_UNCHECKED}\n{PRIVATE_UNCHECKED}",
         )
         for body in bodies:
             with self.subTest(body=body):
                 result = self.run_workflow(
-                    EVENT_NAME="pull_request_review",
-                    PR_NUMBER="",
-                    REVIEW_PR_NUMBER="5",
-                    PR_JSON=json_pull_request(body=body),
+                    EVENT_NAME="pull_request_target",
+                    COMMENT_PR_NUMBER="",
+                    CLOSED_PR_NUMBER="5",
+                    CLOSED_MERGED="true",
+                    CLOSED_MERGER_ID="12053767",
+                    CLOSED_MERGER_TYPE="User",
+                    PR_JSON=json_pull_request(body=body, state="closed", merged=True),
                 )
 
                 self.assertNotEqual(result.returncode, 0, result.stderr)
@@ -292,20 +326,104 @@ class SlideModeWorkflowTests(unittest.TestCase):
                 self.assertIn("Please check exactly one slide-delivery option", log)
                 self.assertNotIn("private-slides-fall-2026-01", log)
 
-    def test_pdf_approval_cleanly_skips_slide_mode_configuration(self) -> None:
+    def test_non_title_merge_cleanly_skips_slide_mode_configuration(self) -> None:
         result = self.run_workflow(
-            EVENT_NAME="pull_request_review",
-            PR_NUMBER="",
-            REVIEW_PR_NUMBER="5",
+            EVENT_NAME="pull_request_target",
+            COMMENT_PR_NUMBER="",
+            CLOSED_PR_NUMBER="5",
+            CLOSED_MERGED="true",
+            CLOSED_MERGER_ID="12053767",
+            CLOSED_MERGER_TYPE="User",
+            PR_JSON=json_pull_request(
+                body=f"{PUBLIC_UNCHECKED}\n{PRIVATE_CHOICE}",
+                state="closed",
+                merged=True,
+            ),
             FILES="_slides/fall-2026-01.pdf",
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            "Approval is not for a title-and-abstract submission; skipping slide-mode configuration.",
+            "Merged pull request is not for a title-and-abstract submission; skipping slide-mode configuration.",
             result.stdout,
         )
         self.assertNotIn("scripts/submission_registry.py", self.log_text())
+
+    def test_closed_unmerged_pull_request_target_skips_before_fetching_pr(self) -> None:
+        result = self.run_workflow(
+            EVENT_NAME="pull_request_target",
+            COMMENT_PR_NUMBER="",
+            CLOSED_PR_NUMBER="5",
+            CLOSED_MERGED="false",
+            CLOSED_MERGER_ID="",
+            CLOSED_MERGER_TYPE="",
+            PR_JSON=json_pull_request(
+                body=f"{PUBLIC_UNCHECKED}\n{PRIVATE_CHOICE}",
+                state="closed",
+                merged=False,
+            ),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Pull request was not merged by the instructor", result.stdout)
+        self.assertNotIn("/repos/stat701/stat701.github.io/pulls/5", self.log_text())
+
+    def test_workflow_dispatch_can_recover_merged_private_title(self) -> None:
+        result = self.run_workflow(
+            EVENT_NAME="workflow_dispatch",
+            COMMENT_PR_NUMBER="",
+            DISPATCH_PR_NUMBER="5",
+            DISPATCH_ACTOR_ID="12053767",
+            PR_JSON=json_pull_request(
+                body=f"{PUBLIC_UNCHECKED}\n{PRIVATE_CHOICE}",
+                state="closed",
+                merged=True,
+            ),
+            CURRENT_MODE="public",
+            MANIFEST_DIFF="1",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        log = self.log_text()
+        self.assertIn("gh api /repos/stat701/stat701.github.io/pulls/5", log)
+        self.assertIn("python scripts/set_slide_mode.py --record-id fall-2026-01 --mode private", log)
+        self.assertIn("Private slides enabled", log)
+
+    def test_workflow_dispatch_rejects_unauthorized_actor(self) -> None:
+        result = self.run_workflow(
+            EVENT_NAME="workflow_dispatch",
+            COMMENT_PR_NUMBER="",
+            DISPATCH_PR_NUMBER="5",
+            DISPATCH_ACTOR_ID="222",
+        )
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Only the instructor may retry slide-mode configuration", result.stdout)
+        self.assertNotIn("/repos/stat701/stat701.github.io/pulls/5", self.log_text())
+
+    def test_workflow_dispatch_unmerged_pr_skips(self) -> None:
+        result = self.run_workflow(
+            EVENT_NAME="workflow_dispatch",
+            COMMENT_PR_NUMBER="",
+            DISPATCH_PR_NUMBER="5",
+            DISPATCH_ACTOR_ID="12053767",
+            PR_JSON=json_pull_request(
+                body=f"{PUBLIC_UNCHECKED}\n{PRIVATE_CHOICE}",
+                state="open",
+                merged=False,
+            ),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Pull request is not merged; skipping slide-mode configuration.", result.stdout)
+        self.assertNotIn("scripts/submission_registry.py", self.log_text())
+
+    def test_invalid_pr_number_fails_before_fetching_pr(self) -> None:
+        result = self.run_workflow(COMMENT_PR_NUMBER="not-a-number")
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Invalid pull request number", result.stdout)
+        self.assertNotIn("/repos/stat701/stat701.github.io/pulls/not-a-number", self.log_text())
 
     def test_public_mode_uses_default_without_manifest_write(self) -> None:
         result = self.run_workflow(COMMENT_BODY="/slides public", CURRENT_MODE="public")
@@ -327,8 +445,41 @@ class SlideModeWorkflowTests(unittest.TestCase):
         log = self.log_text()
         self.assertIn("python scripts/set_slide_mode.py --record-id fall-2026-01 --mode public", log)
         self.assertIn("git commit -m Set fall-2026-01 slide delivery mode to public", log)
-        self.assertIn("pr create --repo stat701/stat701.github.io --base main --head bot/slide-mode-fall-2026-01-99 --title Set fall-2026-01 slides to public", log)
+        self.assertIn("pr create --repo stat701/stat701.github.io --base main --head bot/slide-mode-fall-2026-01-99-1 --title Set fall-2026-01 slides to public", log)
         self.assertIn("Public slides enabled", log)
+
+    def test_manifest_merge_conflict_retries_from_fresh_main(self) -> None:
+        result = self.run_workflow(
+            COMMENT_BODY="/slides public",
+            CURRENT_MODE="private",
+            MANIFEST_DIFF="1",
+            MERGE_FAILURES="1",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        log = self.log_text()
+        self.assertIn("--head bot/slide-mode-fall-2026-01-99-1", log)
+        self.assertIn("--head bot/slide-mode-fall-2026-01-99-2", log)
+        self.assertIn("pr close https://github.com/stat701/stat701.github.io/pull/900", log)
+        self.assertIn("pr merge https://github.com/stat701/stat701.github.io/pull/901", log)
+        self.assertIn("Public slides enabled", log)
+
+    def test_manifest_merge_failure_errors_after_three_attempts(self) -> None:
+        result = self.run_workflow(
+            COMMENT_BODY="/slides public",
+            CURRENT_MODE="private",
+            MANIFEST_DIFF="1",
+            MERGE_FAILURES="3",
+        )
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        log = self.log_text()
+        self.assertIn("--head bot/slide-mode-fall-2026-01-99-1", log)
+        self.assertIn("--head bot/slide-mode-fall-2026-01-99-2", log)
+        self.assertIn("--head bot/slide-mode-fall-2026-01-99-3", log)
+        self.assertEqual(log.count("pr close https://github.com/stat701/stat701.github.io/pull/"), 3)
+        self.assertIn("Failed to merge slide delivery mode for fall-2026-01 after 3 attempts", result.stdout)
+        self.assertNotIn("Public slides enabled", log)
 
     def test_private_repo_must_be_private(self) -> None:
         result = self.run_workflow(
@@ -370,12 +521,21 @@ class SlideModeWorkflowTests(unittest.TestCase):
         self.assertIn(" init -b main", log)
         self.assertIn(" remote add origin https://github.com/stat701/private-slides-fall-2026-01.git", log)
         self.assertNotIn("repo clone stat701/private-slides-fall-2026-01", log)
+        self.assertLess(
+            log.index("git -C"),
+            log.index("collaborators/student"),
+            log,
+        )
 
 
-def json_pull_request(body: str = "", state: str = "open") -> str:
+def json_pull_request(body: str = "", state: str = "open", merged: bool = False) -> str:
     return json.dumps(
         {
             "state": state,
+            "merged": merged,
+            "merged_by": {"id": 12053767, "login": "instructor", "type": "User"}
+            if merged
+            else None,
             "body": body,
             "user": {"id": 222, "login": "student", "type": "User"},
             "head": {"repo": {"full_name": "student/stat701.github.io"}},
