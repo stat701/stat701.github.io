@@ -10,8 +10,8 @@ on:
 permissions:
   actions: read
   contents: read
-  issues: write
-  pull-requests: read
+  issues: read
+  pull-requests: write
 
 concurrency:
   group: pdf-report-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
