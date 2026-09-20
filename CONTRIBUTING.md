@@ -224,6 +224,12 @@ GitHub runs checks on each pull request.
 - For a public slides submission, the checks confirm that the pull request
   adds only the correctly named PDF, that it is unencrypted and contains no
   JavaScript or embedded files, and that every page can be opened and rendered.
+  If PDF inspection finds a warning or fails, an automatic comment explains
+  the detected issue and what to do next. Structural warnings do not block
+  submission when all remaining checks pass. Read the comment and check that
+  your slides look as intended; a warning does not necessarily require a new
+  export. The comment distinguishes a known defect from a suspected export
+  cause when the PDF does not establish the cause.
   This deterministic technical check is separate from a semantic review that
   sends the PDF to OpenAI. That reviewer approaches the slides as a
   statistically literate first-year statistics PhD student who can read
@@ -266,9 +272,11 @@ human review are complete.
 - **The checks say a published file is locked:** contact the instructor. Do
   not open another student pull request to change a merged title, abstract, or
   PDF.
-- **The PDF check fails:** export the presentation again as a standard,
-  unencrypted PDF, verify that it opens locally, and replace the PDF in the
-  same pull-request branch.
+- **The PDF check fails:** read the diagnostic comment on a public slides
+  pull request for the failed check and next steps. If a new export is needed,
+  export a standard, unencrypted PDF, verify that it opens locally, and replace
+  the PDF in the same pull-request branch. A warning with passing checks does
+  not by itself require a replacement.
 - **GitHub says workflows need approval:** wait for the instructor. This is
   normal for a first external pull request and does not mean that you need
   organization access.

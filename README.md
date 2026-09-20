@@ -46,6 +46,12 @@ The GitHub Actions submission check also validates PDF structure, rejects
 encryption, JavaScript, and embedded files, and renders every page with `qpdf`
 and Poppler before a slides pull request can be merged. This deterministic
 technical gate is separate from the advisory semantic review described below.
+For public submissions, qpdf's warnings-only exit status continues through the
+remaining security and rendering checks; errors and timeouts still fail.
+A trusted follow-up workflow posts or updates a PDF diagnostic comment with
+the detected defect, supported explanation, and student action. It binds a
+bounded report artifact to the validation run and current single-PDF PR before
+commenting, and never executes files from the student branch.
 
 ## Public or private slide delivery
 

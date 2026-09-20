@@ -181,54 +181,31 @@ jobs:
           sudo apt-get install --yes poppler-utils qpdf
 
       - name: Check and render every PDF page
+        id: pdf_validation
         if: steps.submission.outputs.submission_type == 'slides'
         working-directory: submission
         env:
           PDF_PATH: ${{ steps.submission.outputs.submission_path }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pdf-validation"
 
-          timeout 45s qpdf --check "$PDF_PATH"
+          python ../trusted/scripts/validate_slide_pdf.py \
+            --pdf "$PDF_PATH" \
+            --report "$RUNNER_TEMP/pdf-validation/report.json" \
+            --head-sha "$HEAD_SHA" \
+            --submission-path "$PDF_PATH"
 
-          pdf_information="$(timeout 45s pdfinfo "$PDF_PATH")"
-          printf '%s\n' "$pdf_information"
-
-          if grep --ignore-case --quiet '^Encrypted:[[:space:]]*yes' <<< "$pdf_information"; then
-            echo "::error::Encrypted PDFs are not accepted. Export an unencrypted PDF."
-            exit 1
-          fi
-
-          javascript="$(timeout 45s pdfinfo -js "$PDF_PATH")"
-          if [[ -n "$javascript" ]]; then
-            echo "::error::PDFs containing JavaScript are not accepted. Export a standard presentation PDF."
-            exit 1
-          fi
-
-          embedded_files="$(timeout 45s pdfdetach -list "$PDF_PATH")"
-          if [[ "$embedded_files" != "0 embedded files" ]]; then
-            echo "::error::PDFs containing embedded files are not accepted. Export slides without attachments."
-            exit 1
-          fi
-
-          page_count="$(awk -F: '/^Pages:/ {gsub(/[[:space:]]/, "", $2); print $2}' <<< "$pdf_information")"
-          if [[ ! "$page_count" =~ ^[0-9]+$ ]] || (( page_count < 1 || page_count > 200 )); then
-            echo "::error::The PDF must contain between 1 and 200 pages."
-            exit 1
-          fi
-
-          render_directory="$(mktemp -d)"
-          timeout 180s pdftoppm \
-            -png \
-            -r 36 \
-            "$PDF_PATH" \
-            "$render_directory/page" \
-            >/dev/null
-
-          rendered_count="$(find "$render_directory" -type f -name 'page-*.png' -size +0c | wc -l | tr -d '[:space:]')"
-          if [[ "$rendered_count" != "$page_count" ]]; then
-            echo "::error::Expected $page_count rendered pages but produced $rendered_count. Human review is required."
-            exit 1
-          fi
-
-          echo "Successfully opened and rendered all $page_count PDF pages."
+      - name: Save PDF diagnostics for the student comment
+        if: >-
+          always() &&
+          steps.pdf_validation.outcome != 'skipped' &&
+          steps.submission.outputs.submission_type == 'slides'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pdf-validation-report-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pdf-validation/report.json
+          if-no-files-found: warn
+          retention-days: 7
