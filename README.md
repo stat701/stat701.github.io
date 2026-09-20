@@ -49,12 +49,17 @@ technical gate is separate from the advisory semantic review described below.
 
 ## Public or private slide delivery
 
-After the title/abstract review, a registered student can comment `/slides public`
-or `/slides private` on the title pull request. Public delivery uses the normal
-PDF pull request and website link. Private delivery creates one private
-repository named `private-slides-<record-id>` in the organization, invites the
-registered student with write access, and marks the public calendar entry as
-"Slides reviewed privately" without copying or linking the PDF.
+The student chooses exactly one slide-delivery option in the
+title-and-abstract pull-request checklist before instructor review. When the
+instructor merges that title pull request, the workflow reads the checklist.
+A registered student or the instructor can also comment `/slides public` or
+`/slides private` while that pull request is open. The title and abstract
+remain public either way. Public delivery uses the normal PDF pull request and
+website link. Private delivery creates one private repository named
+`private-slides-<record-id>` in the organization, invites the registered
+student with write access, and marks the public calendar entry as "Private
+slide delivery; no public PDF is available." without copying or linking the
+PDF.
 
 The `choose-slide-mode.yml` workflow requires an organization administrator
 token stored as the Actions secret `ORG_REPO_ADMIN_TOKEN`. The token must be
@@ -62,6 +67,24 @@ able to create private repositories in the `stat701` organization and manage
 collaborators. Do not use or print the token in logs. The public repository's
 `_data/slide_modes.yml` contains only delivery modes, never private slide
 content.
+
+For a merged title PR whose setup failed or whose choice was corrected, the
+instructor can open **Actions → Choose slide delivery mode → Run workflow**,
+use `main`, and enter the title PR number. The retry checks that the instructor
+merged the PR and that its author owns the assigned record. Repository files
+are installed before the student is invited. Confirm that the repository is
+private and that GitHub lists either the registered student as a collaborator
+or a pending invitation to that account.
+
+The private repository template asks the student to accept the invitation with
+the registered GitHub account, create a branch in the private repository,
+upload one root-level `<record-id>.pdf`, open a pull request to that private
+repository's `main` branch, and revise on the same branch if needed. Private
+repositories currently rely on manual instructor merge policy rather than
+enforced branch protection. Private-slide pull requests receive technical PDF
+validation for a readable, root-level record-ID PDF that is 25 MiB or smaller,
+has 1 to 200 pages, and contains no attachments or JavaScript. They also
+receive instructor review; they are not sent to OpenAI.
 
 ## Maintainer merge checklist
 
@@ -81,6 +104,11 @@ content.
   open title pull request and the later slides pull request, confirm that the
   current-head validation and advisory review have completed. A different
   GitHub account must not be treated as the registered student.
+- For a private-slide repository, confirm that the pull request targets that
+  repository's `main` branch from a student-created branch, contains one
+  root-level record-ID PDF, and passes the private PDF validation workflow.
+  Review and merge it manually; this policy is not locked by branch protection
+  in the generated private repository.
 - Every pull request still requires instructor review and approval before it
   is merged; registration and AI feedback never approve or merge anything.
 
@@ -108,20 +136,22 @@ registered account ID. Identity is checked before an OpenAI request. A title
 review considers the title, abstract, and immutable year in program using the
 course's year-aware rubric.
 
-For slides, deterministic PDF inspection first checks that the file is safe to
-open and that every page renders. A separate semantic review then sends the PDF
-to OpenAI. The reviewer adopts the perspective of a statistically literate
-first-year statistics PhD student: comfortable with graduate textbooks and
-high-quality papers, but not a specialist in the speaker's area. Feedback is
-brief and concentrates on whether the presentation is accessible, coherent,
-visually usable, and valuable to that audience, especially calling out
-particularly confusing slides or screens overwhelmed by mathematics. It does
-not certify factual or mathematical correctness, research ownership, novelty,
-or presentation delivery.
+For public slides, deterministic PDF inspection first checks that the file is
+safe to open and that every page renders. A separate semantic review then sends
+the PDF to OpenAI. The reviewer adopts the perspective of a statistically
+literate first-year statistics PhD student: comfortable with graduate
+textbooks and high-quality papers, but not a specialist in the speaker's area.
+Feedback is brief and concentrates on whether the presentation is accessible,
+coherent, visually usable, and valuable to that audience, especially calling
+out particularly confusing slides or screens overwhelmed by mathematics. It
+does not certify factual or mathematical correctness, research ownership,
+novelty, or presentation delivery. Private-slide pull requests use only the
+technical PDF check and instructor review.
 
-All repository submissions and pull-request discussions are public, and both
-titles/abstracts and PDFs are sent to OpenAI for these reviews. Students must
-not submit confidential, sensitive, private, or restricted material.
+All submissions and pull-request discussions in this public repository are
+public, and titles/abstracts plus public-slide PDFs are sent to OpenAI for
+these reviews. Students must not submit confidential, sensitive, private, or
+restricted material to the public repository or to OpenAI-reviewed workflows.
 
 Each exact submitted file blob receives at most one AI attempt. Re-running a
 workflow for the same version does not request another review; changing the

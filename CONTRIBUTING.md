@@ -6,13 +6,15 @@ Each speaker makes two separate submissions through GitHub:
 2. Submit the final slides as one PDF before the presentation.
 
 When you open your title-and-abstract pull request, choose exactly one slide
-delivery option in the pull-request checklist. After the instructor approves
-that pull request, GitHub Actions will configure the selected mode. Public
-slides follow the workflow below. A private choice creates a private
-repository for your talk, where you upload the PDF for instructor review;
-private slides are never copied to this public site. The `/slides public` and
-`/slides private` comments remain available if the checklist needs to be
-corrected while the pull request is open.
+delivery option in the pull-request checklist. After the instructor merges
+that pull request, GitHub Actions will configure the selected mode. Your talk
+title and abstract are public either way. Public slides follow the public PDF
+workflow below. A private choice creates a private repository for your talk,
+where you upload the PDF through a separate private pull request for
+instructor review; private slides are never copied to this public site. The
+`/slides public` and `/slides private` comments remain available if the
+checklist needs to be corrected while the title-and-abstract pull request is
+open.
 
 You will use GitHub's website for both submissions. You will not submit code,
 and you do not need command-line Git.
@@ -44,13 +46,14 @@ do not try to compress a paper into a dense technical treatise.
   repository is public, GitHub will create a personal fork when you propose
   your first change. A fork is simply the copy GitHub uses to prepare your pull
   request.
-- Everything submitted here is public, including your title, abstract, PDF,
-  pull-request discussion, and revision history. Do not include a NetID, email
-  address, private data, or material that cannot be shared publicly.
-- Both the public title-and-abstract submission and the public PDF are sent to
-  OpenAI for advisory reviews. Do not include confidential, sensitive,
-  private, restricted, or unpublished material that you are not permitted to
-  share with that service.
+- Everything submitted to this public repository is public, including your
+  title, abstract, public PDF, pull-request discussion, and revision history.
+  Do not include a NetID, email address, private data, or material that cannot
+  be shared publicly.
+- The public title-and-abstract submission, and public PDF slides if you choose
+  public slide delivery, are sent to OpenAI for advisory reviews. Do not
+  include confidential, sensitive, private, restricted, or unpublished material
+  that you are not permitted to share with that service.
 - Your first pull request may show that its GitHub Actions workflow is waiting
   for maintainer approval. You do not need to fix this or request repository
   access; the instructor will handle it.
@@ -88,6 +91,10 @@ Replace `fall-2026-01` with your assigned record ID.
    `Title and abstract: fall-2026-01`, complete the checklist, and submit it to
    `stat701/stat701.github.io`.
 
+In that checklist, select exactly one slide-delivery option: public or private.
+If you choose private slide delivery, leave the later public PDF slides section
+unchecked.
+
 The deterministic checks run first. The instructor then verifies that the
 GitHub account belongs to the scheduled student and manually launches
 **Register student and review**. This securely associates your record with your
@@ -122,6 +129,10 @@ and abstract are merged, the published record is locked against later student
 edits. Contact the instructor if a correction is needed.
 
 ## Second pull request: PDF slides
+
+Use this public slides workflow only if you chose **public** slide delivery on
+your title-and-abstract pull request. If you chose **private** slide delivery,
+use the private repository workflow in the next section instead.
 
 Make the slides submission as a separate pull request. It must add exactly one
 file:
@@ -163,6 +174,39 @@ your registered account is recognized automatically. Contact the instructor if
 a correction is needed after merge. Do not edit the calendar, HTML, or your
 talk file to add a link.
 
+## Private slide delivery
+
+If you choose private slide delivery, wait until the instructor has configured
+the private repository for your record. GitHub will invite your registered
+account to a private repository named like:
+
+```text
+stat701/private-slides-fall-2026-01
+```
+
+Replace `fall-2026-01` with your assigned record ID.
+
+1. Accept the invitation using the same GitHub account that the instructor
+   registered from your title-and-abstract pull request. If the private
+   repository link gives a 404 page, contact the instructor; do not upload a
+   public PDF as a workaround.
+2. Open the private repository for your record.
+3. Use the branch selector, type `slides`, and select **Create branch: slides
+   from main**. Do not work directly on `main`, and do not create a fork.
+4. Select **Add file -> Upload files**. Upload exactly one PDF at the repository
+   root, named with your record ID, for example `fall-2026-01.pdf`.
+5. Commit the upload to your `slides` branch.
+6. Select **Compare & pull request**. Confirm that the base branch is this
+   private repository's `main` branch and the compare branch is `slides`.
+   Complete the private-slide checklist and create the pull request.
+7. Wait for the instructor's review. If a revision is requested, replace the
+   PDF on the same branch so the existing pull request updates.
+
+Private-slide pull requests run a technical PDF validation check and then
+receive instructor review. They are not sent to OpenAI for AI review. The
+instructor manually merges private-slide pull requests after the technical
+check and any requested revisions are complete.
+
 ## Automated checks and review
 
 GitHub runs checks on each pull request.
@@ -177,16 +221,21 @@ GitHub runs checks on each pull request.
   introduction rather than a dense technical summary. It does not judge
   novelty or factual correctness. Later eligible revisions by your registered
   account are reviewed automatically.
-- For a slides submission, the checks confirm that the pull request adds only
-  the correctly named PDF, that it is unencrypted and contains no JavaScript or
-  embedded files, and that every page can be opened and rendered. This
-  deterministic technical check is separate from a semantic review that sends
-  the PDF to OpenAI. That reviewer approaches the slides as a statistically
-  literate first-year statistics PhD student who can read graduate textbooks
-  and strong papers but is not a specialist in the topic. Its short feedback
-  focuses on usefulness, accessibility, narrative, visual appeal, confusing
-  slides, and slides with an overwhelming amount of on-screen mathematics. It
-  does not certify correctness or grade the talk.
+- For a public slides submission, the checks confirm that the pull request
+  adds only the correctly named PDF, that it is unencrypted and contains no
+  JavaScript or embedded files, and that every page can be opened and rendered.
+  This deterministic technical check is separate from a semantic review that
+  sends the PDF to OpenAI. That reviewer approaches the slides as a
+  statistically literate first-year statistics PhD student who can read
+  graduate textbooks and strong papers but is not a specialist in the topic.
+  Its short feedback focuses on usefulness, accessibility, narrative, visual
+  appeal, confusing slides, and slides with an overwhelming amount of on-screen
+  mathematics. It does not certify correctness or grade the talk.
+- For a private slides submission, the private repository checks that the pull
+  request changes exactly one readable root-level PDF named with the assigned
+  record ID. The PDF must be 25 MiB or smaller, have 1 to 200 pages, and
+  contain no attachments or JavaScript. Private slides receive technical
+  validation and instructor review, not AI review.
 
 Each exact Markdown or PDF file version receives at most one AI attempt. A new
 file version can receive one new review. If the reviewer is uncertain, cannot
