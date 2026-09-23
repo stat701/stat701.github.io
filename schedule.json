@@ -4,7 +4,12 @@ permalink: /schedule.json
 ---
 {
   "talks": [
-    {% assign talks = site.talks | sort: "date" %}
+    {% assign meetings = site.talks | group_by_exp: "talk", "talk.date | date: '%Y-%m-%d'" | sort: "name" %}
+    {% assign talks = "" | split: "," %}
+    {% for meeting in meetings %}
+      {% assign meeting_talks = meeting.items | sort: "order" %}
+      {% assign talks = talks | concat: meeting_talks %}
+    {% endfor %}
     {% for talk in talks %}
     {
       "record_id": {{ talk.record_id | jsonify }},

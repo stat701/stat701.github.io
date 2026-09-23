@@ -22,6 +22,7 @@ import json
 import re
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -497,6 +498,74 @@ def _decode_metadata(data: bytes, path: str) -> str:
         raise ValidationError(f"'{path}' must be UTF-8 text.") from error
 
 
+def _validate_schedule_swap(
+    repo: Path, base: str, head: str, changes: Sequence[ChangedFile]
+) -> ValidationResult:
+    """Allow trusted maintainers to permute existing slots without editing talks."""
+
+    slots: list[list[tuple[str, str]]] = [[], []]
+    schedule_indexes = {
+        EXPECTED_FRONT_MATTER_FIELDS.index(field) + 1 for field in ("date", "order")
+    }
+    for change in changes:
+        match = TALK_PATH_RE.fullmatch(change.path)
+        if change.status != "M" or match is None:
+            raise ValidationError(
+                "A maintainer schedule swap may only modify existing assigned "
+                "talk files, without other file changes."
+            )
+        protected_text = []
+        for revision_index, revision in enumerate((base, head)):
+            text = _decode_metadata(
+                _read_blob(repo, revision, change.path, max_bytes=MAX_METADATA_BYTES),
+                change.path,
+            )
+            document = parse_talk_document(text)
+            if document.fields["record_id"] != match.group("record_id"):
+                raise ValidationError("The record_id must match the talk filename.")
+            slot_date = document.fields["date"]
+            try:
+                if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", slot_date):
+                    raise ValueError
+                date.fromisoformat(slot_date)
+            except ValueError as error:
+                raise ValidationError(
+                    "Schedule dates must be valid ISO dates in YYYY-MM-DD format."
+                ) from error
+            order = document.fields["order"]
+            if order not in {"1", "2"}:
+                raise ValidationError("Schedule order must be 1 or 2.")
+            slots[revision_index].append((slot_date, order))
+            lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+            protected_text.append(
+                tuple(line for index, line in enumerate(lines) if index not in schedule_indexes)
+            )
+        if protected_text[0] != protected_text[1]:
+            raise ValidationError(
+                "A maintainer schedule swap may change only date and order; "
+                "identity, title, abstract, comments, and all other text must stay unchanged."
+            )
+
+    old_slots, new_slots = slots
+    if old_slots == new_slots:
+        raise ValidationError("A maintainer schedule swap must change an assigned slot.")
+    if (
+        len(set(old_slots)) != len(changes)
+        or len(set(new_slots)) != len(changes)
+        or set(old_slots) != set(new_slots)
+    ):
+        raise ValidationError(
+            "A maintainer schedule swap must be a permutation of unique existing "
+            "date and order slots, without adding, removing, or duplicating a slot."
+        )
+    return ValidationResult(
+        submission_type="none",
+        path=None,
+        record_id=None,
+        message=f"Valid trusted-maintainer schedule swap across {len(changes)} existing records.",
+    )
+
+
 def validate_submission(
     repo: Path | str,
     base: str,
@@ -525,6 +594,9 @@ def validate_submission(
             record_id=None,
             message="No student submission paths changed; nothing to validate.",
         )
+
+    if allow_schedule_changes and len(changes) >= 2:
+        return _validate_schedule_swap(repo_path, base_commit, head_commit, changes)
 
     if len(changes) != 1:
         changed_paths = ", ".join(change.path for change in changes)
@@ -674,7 +746,10 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow-schedule-changes",
         action="store_true",
-        help="Allow a trusted same-repository maintainer to remove a scheduled record.",
+        help=(
+            "Allow a trusted same-repository maintainer to remove a scheduled "
+            "record or swap existing date and order slots without changing talk content."
+        ),
     )
     return parser
 

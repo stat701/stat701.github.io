@@ -34,6 +34,15 @@ Then open <http://localhost:4000>.
   a reviewed correction from a same-repository branch.
 - See [CONTRIBUTING.md](CONTRIBUTING.md) for the browser-only student process.
 
+For an instructor-approved slot swap, keep each speaker's record ID and file,
+and exchange only the `date` and `order` fields in a separate same-repository
+pull request. The instructor's scheduling override accepts permutations of
+existing slots while preserving every other field and the talk content.
+Student pull requests cannot change scheduling fields. Both the calendar and
+`schedule.json` sort by date and then presentation order, so record IDs need
+not follow chronological order. Submission links, account registration, and
+slide delivery settings stay attached to the same record IDs.
+
 ## Validate submissions locally
 
 Run the dependency-free unit tests with:

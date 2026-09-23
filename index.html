@@ -218,7 +218,12 @@ layout: null
           </div>
         </div>
 
-        {% assign fall_talks = site.talks | where: "semester", "fall-2026" | sort: "date" %}
+        {% assign fall_meetings = site.talks | where: "semester", "fall-2026" | group_by_exp: "talk", "talk.date | date: '%Y-%m-%d'" | sort: "name" %}
+        {% assign fall_talks = "" | split: "," %}
+        {% for meeting in fall_meetings %}
+          {% assign meeting_talks = meeting.items | sort: "order" %}
+          {% assign fall_talks = fall_talks | concat: meeting_talks %}
+        {% endfor %}
         {% assign current_session = "" %}
         <ol class="schedule-list" role="list">
           {% for talk in fall_talks %}

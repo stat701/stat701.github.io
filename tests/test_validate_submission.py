@@ -445,5 +445,151 @@ class RepositoryDiffTests(unittest.TestCase):
         self.assertEqual(result.record_id, "fall-2026-01")
 
 
+class ScheduleSwapTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.repository = TemporaryGitRepository()
+        self.paths = ("_talks/fall-2026-13.md", "_talks/fall-2026-16.md")
+        self.original = (
+            talk_text(record_id="fall-2026-13", speaker='"Li Fan"').replace(
+                "2026-08-31", "2026-11-09"
+            ),
+            talk_text(
+                record_id="fall-2026-16",
+                speaker='"Hun Kang"',
+                title='"A Statistical Idea Worth Explaining"',
+                abstract=INSTRUCTION_COMMENT + "\n\n" + VALID_ABSTRACT,
+            ).replace("2026-08-31", "2026-11-16").replace("order: 1", "order: 2"),
+        )
+        self.swapped = (
+            self.original[0].replace("2026-11-09", "2026-11-16").replace(
+                "order: 1", "order: 2"
+            ),
+            self.original[1].replace("2026-11-16", "2026-11-09").replace(
+                "order: 2", "order: 1"
+            ),
+        )
+        self.write_documents(self.original)
+        self.base = self.repository.commit("Add empty and completed scheduled talks")
+
+    def tearDown(self) -> None:
+        self.repository.close()
+
+    def write_documents(self, documents: tuple[str, str]) -> None:
+        for path, text in zip(self.paths, documents, strict=True):
+            self.repository.write_text(path, text)
+
+    def validate(self, head: str):
+        return validate_submission(
+            self.repository.path, self.base, head, allow_schedule_changes=True
+        )
+
+    def test_swap_preserves_empty_and_completed_talks_and_skips_student_review(self) -> None:
+        self.write_documents(self.swapped)
+        head = self.repository.commit("Swap two existing slots")
+
+        result = self.validate(head)
+
+        self.assertEqual(result.submission_type, "none")
+        self.assertIsNone(result.path)
+        self.assertIsNone(result.record_id)
+        self.assertIn("trusted-maintainer schedule swap", result.message)
+        output_path = self.repository.path / "github-output.txt"
+        with redirect_stdout(StringIO()):
+            return_code = main([
+                "--repo", str(self.repository.path), "--base", self.base,
+                "--head", head, "--allow-schedule-changes",
+                "--github-output", str(output_path),
+            ])
+        self.assertEqual(return_code, 0)
+        self.assertEqual(
+            output_path.read_text(), "submission_type=none\nsubmission_path=\nrecord_id=\n"
+        )
+
+    def test_swap_requires_explicit_maintainer_permission(self) -> None:
+        self.write_documents(self.swapped)
+        head = self.repository.commit("Attempt student schedule swap")
+        with self.assertRaisesRegex(ValidationError, "exactly one"):
+            validate_submission(self.repository.path, self.base, head)
+
+    def test_swap_rejects_changes_to_identity_title_body_comments_and_whitespace(self) -> None:
+        edits = (
+            ("record_id: fall-2026-16", "record_id: fall-2026-13"),
+            ('speaker: "Hun Kang"', 'speaker: "Another Student"'),
+            ("year_in_program: 3", "year_in_program: 2"),
+            ("semester: fall-2026", "semester: fall-2027"),
+            ("A Statistical Idea Worth Explaining", "A Different Talk Title"),
+            (VALID_ABSTRACT, VALID_ABSTRACT + " An additional sentence."),
+            (INSTRUCTION_COMMENT, "<!-- Changed instructions. -->"),
+            ("\n\n", "\n\n\n"),
+        )
+        for before, after in edits:
+            with self.subTest(edit=before):
+                self.write_documents((self.swapped[0], self.swapped[1].replace(before, after)))
+                head = self.repository.commit("Attempt content edit during swap")
+                with self.assertRaises(ValidationError):
+                    self.validate(head)
+        self.write_documents((self.swapped[0], self.swapped[1].rstrip("\n")))
+        head = self.repository.commit("Attempt trailing newline edit during swap")
+        with self.assertRaisesRegex(ValidationError, "only date and order"):
+            self.validate(head)
+
+    def test_swap_rejects_invalid_dates_and_orders(self) -> None:
+        for before, after in (
+            ("2026-11-16", "2026-02-30"),
+            ("2026-11-16", "20261116"),
+            ("2026-11-16", "2026-1-16"),
+            ("order: 2", "order: 3"),
+            ("order: 2", "order: 02"),
+        ):
+            with self.subTest(value=after):
+                self.write_documents((self.swapped[0].replace(before, after), self.swapped[1]))
+                head = self.repository.commit("Attempt invalid scheduled slot")
+                with self.assertRaisesRegex(ValidationError, "ISO dates|order must be"):
+                    self.validate(head)
+
+    def test_swap_requires_the_same_unique_slots(self) -> None:
+        for new_date in ("2026-11-16", "2026-11-23"):
+            with self.subTest(date=new_date):
+                second = self.swapped[1].replace("2026-11-09", new_date).replace(
+                    "order: 1", "order: 2"
+                ).replace("\n", "\r\n")
+                self.write_documents((self.swapped[0], second))
+                head = self.repository.commit("Attempt duplicate or newly invented slot")
+                with self.assertRaisesRegex(ValidationError, "permutation of unique"):
+                    self.validate(head)
+
+    def test_line_ending_normalization_alone_does_not_count_as_a_swap(self) -> None:
+        self.write_documents(tuple(text.replace("\n", "\r\n") for text in self.original))
+        head = self.repository.commit("Change line endings without moving slots")
+        with self.assertRaisesRegex(ValidationError, "must change an assigned slot"):
+            self.validate(head)
+
+    def test_swap_allows_normalized_line_endings(self) -> None:
+        self.write_documents(tuple(text.replace("\n", "\r\n") for text in self.swapped))
+        head = self.repository.commit("Swap slots with normalized line endings")
+        self.assertEqual(self.validate(head).submission_type, "none")
+
+    def test_swap_rejects_unrelated_files(self) -> None:
+        self.write_documents(self.swapped)
+        self.repository.write_text("index.html", "an unrelated site edit\n")
+        head = self.repository.commit("Mix site edit into swap")
+        with self.assertRaisesRegex(ValidationError, "only modify existing assigned"):
+            self.validate(head)
+
+    def test_swap_rejects_added_talks(self) -> None:
+        self.write_documents(self.swapped)
+        self.repository.write_text("_talks/fall-2026-17.md", talk_text(record_id="fall-2026-17"))
+        head = self.repository.commit("Mix new talk into swap")
+        with self.assertRaisesRegex(ValidationError, "only modify existing assigned"):
+            self.validate(head)
+
+    def test_swap_rejects_deleted_talks(self) -> None:
+        self.write_documents(self.swapped)
+        (self.repository.path / self.paths[1]).unlink()
+        head = self.repository.commit("Delete a talk instead of swapping it")
+        with self.assertRaisesRegex(ValidationError, "only modify existing assigned"):
+            self.validate(head)
+
+
 if __name__ == "__main__":
     unittest.main()
