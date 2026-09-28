@@ -192,6 +192,49 @@ button:focus-visible {
   transform-origin: left;
 }
 
+.meeting-banner {
+  color: var(--navy-950);
+  background: var(--gold-300);
+}
+
+.meeting-banner__inner {
+  width: min(100% - (2 * var(--gutter)), var(--page-width));
+  margin: 0 auto;
+  padding: 1.5rem 0 1.8rem;
+}
+
+.meeting-banner h2 {
+  margin: 0 0 1rem;
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.meeting-banner__details {
+  display: grid;
+  margin: 0;
+  gap: 1rem 2rem;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1.2fr);
+}
+
+.meeting-banner__details dt {
+  margin-bottom: 0.15rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.meeting-banner__details dd {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.65rem, 3.3vw, 2.65rem);
+  font-weight: 700;
+  line-height: 1.2;
+}
+
 .hero {
   overflow: hidden;
   background:
@@ -690,6 +733,34 @@ button:focus-visible {
   color: var(--ink-700);
 }
 
+.schedule-meeting-details {
+  margin-bottom: 2rem;
+  padding: 1.25rem 1.5rem;
+  border-left: 5px solid var(--gold-300);
+  color: var(--white);
+  background: var(--navy-900);
+}
+
+.schedule-meeting-details__label {
+  margin: 0 0 0.4rem;
+  color: var(--gold-300);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.schedule-meeting-details__facts {
+  display: flex;
+  margin: 0;
+  flex-wrap: wrap;
+  gap: 0.4rem 2.5rem;
+  font-family: var(--font-display);
+  font-size: clamp(1.35rem, 2.5vw, 1.8rem);
+  font-weight: 600;
+  line-height: 1.35;
+}
+
 .schedule-guide-link {
   display: inline-flex;
   min-height: 44px;
@@ -1058,6 +1129,18 @@ button:focus-visible {
     padding-top: 4.2rem;
   }
 
+  .meeting-banner__details {
+    grid-template-columns: 1fr;
+  }
+
+  .meeting-banner__details dd {
+    font-size: 1.85rem;
+  }
+
+  .schedule-meeting-details__facts {
+    flex-direction: column;
+  }
+
   .hero__footnote span:nth-child(2) {
     display: none;
   }
@@ -1220,7 +1303,9 @@ button:focus-visible {
   }
 
   body,
+  .meeting-banner,
   .hero,
+  .schedule-meeting-details,
   .questions-section,
   .closing-note,
   .site-footer {
@@ -1241,6 +1326,7 @@ button:focus-visible {
   }
 
   .questions-section *,
+  .schedule-meeting-details *,
   .closing-note *,
   .site-footer * {
     color: #000 !important;
