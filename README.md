@@ -101,6 +101,25 @@ validation for a readable, root-level record-ID PDF that is 25 MiB or smaller,
 has 1 to 200 pages, and contains no attachments or JavaScript. They also
 receive instructor review; they are not sent to OpenAI.
 
+Private PDF validation uses the same engine and diagnostic reporter as public
+PDF validation. qpdf warning status 3 is accepted only after all security and
+page-render checks pass. A separate trusted workflow posts actionable failure
+or warning comments in the private PR, bound to its current head commit. Only
+bounded technical diagnostics are uploaded as an artifact; PDFs and rendered
+images are never uploaded or sent to an AI service by this workflow.
+
+When changing `scripts/validate_slide_pdf.py` or
+`scripts/report_pdf_validation.py`, run
+`python scripts/sync_private_slide_template.py` and commit the generated
+template copies too. Tests enforce identical copies so private repositories
+receive the same fixes. After a template change reaches `main`, **Sync private
+slide infrastructure** automatically updates the infrastructure in existing
+private slide repositories, preserving their PDF files and student branches.
+The workflow can also be run manually by the instructor. To preview a rollout
+locally, run `python scripts/sync_private_slide_repositories.py`; add `--apply`
+to perform it, or `--repository stat701/private-slides-fall-2026-08` to limit
+the target. This uses the authenticated CLI without displaying its token.
+
 ## Maintainer merge checklist
 
 - On a student's first title-and-abstract pull request, confirm that

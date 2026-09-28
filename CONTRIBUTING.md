@@ -92,6 +92,8 @@ Replace `fall-2026-01` with your assigned record ID.
    `stat701/stat701.github.io`.
 
 In that checklist, select exactly one slide-delivery option: public or private.
+Replace the space in your chosen `[ ]` with `x` to make `[x]`, or click the
+checkbox after creating the pull request. Leave the other option unchecked.
 If you choose private slide delivery, leave the later public PDF slides section
 unchecked.
 
@@ -206,6 +208,14 @@ Private-slide pull requests run a technical PDF validation check and then
 receive instructor review. They are not sent to OpenAI for AI review. The
 instructor manually merges private-slide pull requests after the technical
 check and any requested revisions are complete.
+
+If the PDF checker finds a problem, an automatic comment in your private pull
+request explains the failed check and what to do next. Recoverable PDF
+structure warnings are accepted only after the security checks pass and every
+page renders. The comment explains recognized warning patterns and includes
+the technical diagnostics. If it says the check passed with warnings, no new
+export is required for that check; open the PDF yourself to confirm that it
+looks right, then wait for instructor review.
 
 ## Automated checks and review
 

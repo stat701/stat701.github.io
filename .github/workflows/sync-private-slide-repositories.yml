@@ -1,0 +1,57 @@
+name: Sync private slide infrastructure
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - templates/private-slides/**
+      - scripts/validate_slide_pdf.py
+      - scripts/report_pdf_validation.py
+      - scripts/sync_private_slide_repositories.py
+      - scripts/sync_private_slide_template.py
+      - .github/workflows/sync-private-slide-repositories.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-private-slide-infrastructure
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: >-
+      github.repository == 'stat701/stat701.github.io' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && github.actor_id == '12053767'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out trusted infrastructure from main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            templates/private-slides
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Update existing private repositories
+        env:
+          GH_TOKEN: ${{ secrets.ORG_REPO_ADMIN_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::Private slide infrastructure sync requires ORG_REPO_ADMIN_TOKEN; no repositories were updated."
+            exit 1
+          fi
+          python scripts/sync_private_slide_repositories.py --apply

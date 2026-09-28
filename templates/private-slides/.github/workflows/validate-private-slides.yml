@@ -64,16 +64,35 @@ jobs:
           fi
           record_id="${BASH_REMATCH[1]}"
 
-          if [[ ! -f trusted/scripts/validate_private_slides.py ]]; then
-            echo "::error::The trusted base commit does not contain the private slide validator."
+          if [[ ! -f trusted/scripts/validate_private_slides.py || ! -f trusted/scripts/validate_slide_pdf.py ]]; then
+            echo "::error::The trusted base commit does not contain the private slide validator and shared PDF engine."
             exit 1
           fi
 
-          git -C submission cat-file -e "${BASE_SHA}^{commit}"
-          git -C submission cat-file -e "${HEAD_SHA}^{commit}"
           python trusted/scripts/validate_private_slides.py \
             --repo submission \
             --base "$BASE_SHA" \
             --head "$HEAD_SHA" \
             --record-id "$record_id" \
+            --report "$RUNNER_TEMP/pdf-validation/report.json" \
             --github-output "$GITHUB_OUTPUT"
+
+      - name: Check for PDF diagnostics
+        id: report
+        if: ${{ always() }}
+        env:
+          REPORT_PATH: ${{ runner.temp }}/pdf-validation/report.json
+        shell: bash
+        run: |
+          if [[ -f "$REPORT_PATH" ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload the private PDF validation report
+        if: ${{ always() && steps.report.outputs.exists == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pdf-validation-report-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pdf-validation/report.json
+          if-no-files-found: error
+          retention-days: 3

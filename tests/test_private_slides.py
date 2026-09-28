@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
+import json
 import shutil
 import subprocess
 import sys
@@ -129,6 +132,35 @@ def sample_pdf(page_count: int = 2) -> bytes:
     return bytes(output)
 
 
+def simulated_pdf_tools(scenario: str = "success"):
+    def run(command, *, timeout):
+        stdout, stderr, returncode = "", "", 0
+        if command[0] == "qpdf":
+            stderr = "WARNING: slide.pdf (object 12 0): object has offset 0\noperation succeeded with warnings\n"
+            returncode = 3
+        elif command[0] == "pdfinfo" and "-js" not in command:
+            encrypted = "yes" if scenario == "encrypted" else "no"
+            pages = {"empty": 0, "too_many_pages": 201}.get(scenario, 2)
+            stdout = f"Producer: PowerPoint\nEncrypted: {encrypted}\nPages: {pages}\n"
+        elif command[0] == "pdfinfo" and "-js" in command:
+            stdout = "PRIVATE_SLIDE_SENTINEL" if scenario == "javascript" else ""
+        elif command[0] == "pdfdetach":
+            stdout = "1 embedded files\n1: PRIVATE_SLIDE_SENTINEL" if scenario == "attachments" else "0 embedded files\n"
+        elif command[0] == "pdftoppm":
+            if scenario == "render_failure":
+                returncode = 1
+            else:
+                prefix = Path(command[-1])
+                prefix.with_name("page-1.png").write_bytes(b"PRIVATE_SLIDE_SENTINEL")
+                if scenario != "missing_page":
+                    prefix.with_name("page-2.png").write_bytes(b"PRIVATE_SLIDE_SENTINEL")
+        else:
+            raise AssertionError(command)
+        return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+
+    return run
+
+
 class PrivateSlideValidationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.repository = TemporaryGitRepository()
@@ -243,49 +275,198 @@ class PrivateSlideValidationTests(unittest.TestCase):
 
         self.assertEqual(result.path, "fall-2026-01.pdf")
 
-    def test_security_metadata_is_rejected(self) -> None:
-        with self.assertRaisesRegex(private_slides.ValidationError, "Encrypted"):
-            private_slides._extract_page_count("Pages: 2\nEncrypted: yes\n")
-
-        def fake_js_run(command: list[str], **_kwargs: object) -> str:
-            if command[:2] == ["qpdf", "--check"]:
-                return ""
-            if command[:1] == ["pdfinfo"] and "-js" not in command:
-                return "Pages: 2\nEncrypted: no\n"
-            if command[:2] == ["pdfinfo", "-js"]:
-                return "OpenAction JavaScript\n"
-            if command[:2] == ["pdfdetach", "-list"]:
-                return "0 embedded files\n"
-            if command[:1] == ["pdftoppm"]:
-                return ""
-            raise AssertionError(command)
-
+    def test_structure_failure_produces_a_fresh_bounded_report(self) -> None:
+        self.repository.write_bytes("slides.pdf", sample_pdf())
+        head = self.repository.commit("Submit wrong filename")
         with tempfile.TemporaryDirectory() as temporary:
-            pdf_path = Path(temporary) / "fall-2026-01.pdf"
-            pdf_path.write_bytes(sample_pdf())
-            with mock.patch.object(private_slides, "_run", side_effect=fake_js_run):
-                with self.assertRaisesRegex(private_slides.ValidationError, "JavaScript"):
-                    private_slides.validate_pdf_with_tools(pdf_path)
+            report_path = Path(temporary) / "report.json"
+            report_path.write_text('{"status": "passed"}', encoding="utf-8")
+            with self.assertRaisesRegex(private_slides.ValidationError, "fall-2026-01.pdf"):
+                private_slides.validate_private_slides(
+                    self.repository.path, self.base, head, "fall-2026-01",
+                    report_path=report_path,
+                )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["schema_version"], 1)
+            self.assertEqual(report["head_sha"], head)
+            self.assertEqual(report["submission_path"], "fall-2026-01.pdf")
+            self.assertEqual(report["status"], "failed")
+            self.assertEqual(report["qpdf_warnings"], [])
+            for field in ("qpdf_exit_code", "producer", "page_count", "rendered_count"):
+                self.assertIsNone(report[field])
+            self.assertLessEqual(report_path.stat().st_size, 60_000)
 
-        def fake_attachment_run(command: list[str], **_kwargs: object) -> str:
-            if command[:2] == ["qpdf", "--check"]:
-                return ""
-            if command[:2] == ["pdfinfo", "-js"]:
-                return ""
-            if command[:2] == ["pdfdetach", "-list"]:
-                return "1 embedded files\n1: payload.bin\n"
-            if command[:1] == ["pdfinfo"]:
-                return "Pages: 2\nEncrypted: no\n"
-            if command[:1] == ["pdftoppm"]:
-                return ""
-            raise AssertionError(command)
+    def test_oversized_and_invalid_envelope_pdfs_stop_before_tools(self) -> None:
+        for content, maximum, expected in (
+            (sample_pdf(), 10, "maximum accepted size"),
+            (b"private slide text is not PDF", private_slides.MAX_PDF_BYTES, "PDF signature"),
+            (b"%PDF-1.7\nprivate slide text", private_slides.MAX_PDF_BYTES, "end marker"),
+        ):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as temporary:
+                self.repository.write_bytes("fall-2026-01.pdf", content)
+                head = self.repository.commit("Submit malformed private slides")
+                report_path = Path(temporary) / "report.json"
+                with mock.patch.object(private_slides, "MAX_PDF_BYTES", maximum), mock.patch.object(
+                    private_slides.pdf_validation, "_run_tool"
+                ) as run_tool:
+                    with self.assertRaisesRegex(private_slides.ValidationError, expected):
+                        private_slides.validate_private_slides(
+                            self.repository.path, self.base, head, "fall-2026-01",
+                            report_path=report_path,
+                        )
+                run_tool.assert_not_called()
+                report_text = report_path.read_text(encoding="utf-8")
+                report = json.loads(report_text)
+                self.assertEqual(report["status"], "failed")
+                self.assertIn(expected, report["failure"])
+                self.assertNotIn("private slide text", report_text)
 
+    def test_warning_pdf_runs_all_checks_and_preserves_private_report_identity(self) -> None:
+        self.repository.write_bytes("fall-2026-01.pdf", sample_pdf())
+        head = self.repository.commit("Submit private slides with a structural warning")
         with tempfile.TemporaryDirectory() as temporary:
-            pdf_path = Path(temporary) / "fall-2026-01.pdf"
-            pdf_path.write_bytes(sample_pdf())
-            with mock.patch.object(private_slides, "_run", side_effect=fake_attachment_run):
-                with self.assertRaisesRegex(private_slides.ValidationError, "embedded files"):
-                    private_slides.validate_pdf_with_tools(pdf_path)
+            report_path = Path(temporary) / "report.json"
+            with mock.patch.object(
+                private_slides.pdf_validation, "_run_tool",
+                side_effect=simulated_pdf_tools(),
+            ) as run_tool:
+                result = private_slides.validate_private_slides(
+                    self.repository.path, self.base, head, "fall-2026-01",
+                    report_path=report_path,
+                )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(result.page_count, 2)
+            self.assertEqual(report["status"], "passed")
+            self.assertEqual(report["head_sha"], head)
+            self.assertEqual(report["submission_path"], "fall-2026-01.pdf")
+            self.assertEqual(report["qpdf_exit_code"], 3)
+            self.assertIn("object has offset 0", report["qpdf_warnings"][0])
+            self.assertEqual(report["rendered_count"], 2)
+            self.assertEqual(
+                [call.args[0][0] for call in run_tool.call_args_list],
+                ["qpdf", "pdfinfo", "pdfinfo", "pdfdetach", "pdftoppm"],
+            )
+            self.assertEqual(list(Path(temporary).iterdir()), [report_path])
+
+    def test_qpdf_fatal_error_stops_checks_and_retains_diagnostic_report(self) -> None:
+        self.repository.write_bytes("fall-2026-01.pdf", sample_pdf())
+        head = self.repository.commit("Submit private slides")
+        with tempfile.TemporaryDirectory() as temporary:
+            report_path = Path(temporary) / "report.json"
+            with mock.patch.object(
+                private_slides.pdf_validation, "_run_tool",
+                return_value=subprocess.CompletedProcess("qpdf", 2, "", "broken xref"),
+            ) as run_tool:
+                with self.assertRaisesRegex(private_slides.ValidationError, "PDF structure error"):
+                    private_slides.validate_private_slides(
+                        self.repository.path, self.base, head, "fall-2026-01",
+                        report_path=report_path,
+                    )
+            run_tool.assert_called_once()
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "failed")
+            self.assertEqual(report["qpdf_exit_code"], 2)
+            self.assertIn("broken xref", report["failure"])
+
+    def test_qpdf_warning_never_bypasses_security_page_count_or_render_failures(self) -> None:
+        cases = (
+            ("encrypted", "Encrypted PDFs"),
+            ("javascript", "JavaScript"),
+            ("attachments", "embedded files"),
+            ("empty", "between 1 and 200"),
+            ("too_many_pages", "between 1 and 200"),
+            ("render_failure", "could not be rendered"),
+            ("missing_page", "produced 1"),
+        )
+        for scenario, expected in cases:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                pdf_path = Path(temporary) / "fall-2026-01.pdf"
+                pdf_path.write_bytes(sample_pdf())
+                report_path = Path(temporary) / "report.json"
+                captured = io.StringIO()
+                with mock.patch.object(
+                    private_slides.pdf_validation, "_run_tool",
+                    side_effect=simulated_pdf_tools(scenario),
+                ), contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
+                    with self.assertRaisesRegex(private_slides.ValidationError, expected):
+                        private_slides.validate_pdf_with_tools(
+                            pdf_path, report_path=report_path,
+                            head_sha="a" * 40, submission_path=pdf_path.name,
+                        )
+                report_text = report_path.read_text(encoding="utf-8")
+                report = json.loads(report_text)
+                self.assertEqual(report["status"], "failed")
+                self.assertEqual(report["qpdf_exit_code"], 3)
+                self.assertIn(expected, report["failure"])
+                self.assertNotIn("PRIVATE_SLIDE_SENTINEL", report_text + captured.getvalue())
+
+    def test_tool_timeouts_fail_and_write_diagnostics_after_a_warning(self) -> None:
+        for timed_out in ("qpdf", "pdftoppm"):
+            with self.subTest(tool=timed_out), tempfile.TemporaryDirectory() as temporary:
+                pdf_path = Path(temporary) / "fall-2026-01.pdf"
+                pdf_path.write_bytes(sample_pdf())
+                report_path = Path(temporary) / "report.json"
+                fake_tools = simulated_pdf_tools()
+
+                def fake_subprocess_run(command, **kwargs):
+                    if command[0] == timed_out:
+                        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+                    return fake_tools(command, timeout=kwargs["timeout"])
+
+                with mock.patch.object(
+                    private_slides.pdf_validation.subprocess, "run",
+                    side_effect=fake_subprocess_run,
+                ):
+                    with self.assertRaisesRegex(private_slides.ValidationError, "timed out"):
+                        private_slides.validate_pdf_with_tools(pdf_path, report_path=report_path)
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                self.assertEqual(report["status"], "failed")
+                self.assertIn(timed_out, report["failure"])
+                self.assertEqual(report["qpdf_exit_code"], None if timed_out == "qpdf" else 3)
+
+    @unittest.skipUnless(
+        all(shutil.which(tool) for tool in ("qpdf", "pdfinfo", "pdfdetach", "pdftoppm")),
+        "qpdf and Poppler are required for PDF integration validation",
+    )
+    def test_installed_cli_accepts_real_offset_zero_warning_and_uses_trusted_engine(self) -> None:
+        warning_pdf = (
+            sample_pdf(page_count=2)
+            .replace(b"xref\n0 8\n", b"xref\n0 9\n")
+            .replace(b"trailer\n", b"0000000000 00000 n \ntrailer\n")
+            .replace(b"/Size 8 ", b"/Size 9 ")
+        )
+        self.repository.write_bytes("fall-2026-01.pdf", warning_pdf)
+        head = self.repository.commit("Submit PDF with an unused zero-offset object")
+        # An untracked module in the untrusted working directory cannot replace
+        # the shared engine beside the installed, trusted validator.
+        self.repository.write_text(
+            "validate_slide_pdf.py", "raise RuntimeError('UNTRUSTED_ENGINE_EXECUTED')\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            trusted_scripts = Path(temporary) / "trusted" / "scripts"
+            trusted_scripts.mkdir(parents=True)
+            for name in ("validate_private_slides.py", "validate_slide_pdf.py"):
+                shutil.copyfile(SCRIPT_PATH.with_name(name), trusted_scripts / name)
+            report_path = Path(temporary) / "report.json"
+            result = subprocess.run(
+                [
+                    sys.executable, str(trusted_scripts / "validate_private_slides.py"),
+                    "--repo", str(self.repository.path), "--base", self.base,
+                    "--head", head, "--record-id", "fall-2026-01",
+                    "--report", str(report_path),
+                ],
+                cwd=self.repository.path, capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn("UNTRUSTED_ENGINE_EXECUTED", result.stdout + result.stderr)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "passed")
+            self.assertEqual(report["head_sha"], head)
+            self.assertEqual(report["submission_path"], "fall-2026-01.pdf")
+            self.assertEqual(report["qpdf_exit_code"], 3)
+            self.assertIn("object has offset 0", "\n".join(report["qpdf_warnings"]))
+            self.assertEqual(report["page_count"], 2)
+            self.assertEqual(report["rendered_count"], 2)
 
     @unittest.skipUnless(
         all(shutil.which(tool) for tool in ("qpdf", "pdfinfo", "pdfdetach", "pdftoppm")),
