@@ -40,7 +40,8 @@ For a **title and abstract** submission:
       account before the first AI review runs.
 
 Choose exactly one slide-delivery option. Your title and abstract remain
-public with either choice.
+public with either choice. Replace the space in your chosen `[ ]` with `x`
+to make `[x]`, or click its checkbox after creating the pull request.
 
 - [ ] I choose **public** slide delivery: my PDF will be published on the
       course website.

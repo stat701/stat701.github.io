@@ -38,3 +38,15 @@ Private-slide pull requests run a technical PDF check: the PDF must be
 readable, unencrypted, 25 MiB or smaller, 1 to 200 pages, free of attachments
 and JavaScript, and renderable. They do not receive an AI review. The
 instructor reviews and merges the private pull request manually.
+
+If validation fails or reports PDF structure warnings, an automatic comment
+in your private pull request explains the check and what to do next. A
+recoverable qpdf warning is accepted only when the security checks pass and
+every page renders. If the comment says the check passed with warnings, you
+do not need a new export for that check: open your PDF, confirm that the slides
+look right, and wait for instructor review. Failed checks must be resolved
+before the instructor merges the submission.
+
+These comments contain technical diagnostics only. The slides and their
+rendered images stay inside the private validation job; they are not sent to
+an AI service or copied to the public course repository.

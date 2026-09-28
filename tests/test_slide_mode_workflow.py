@@ -308,6 +308,9 @@ class SlideModeWorkflowTests(unittest.TestCase):
         bodies = (
             f"{PUBLIC_CHOICE}\n{PRIVATE_CHOICE}",
             f"{PUBLIC_UNCHECKED}\n{PRIVATE_UNCHECKED}",
+            f"{PUBLIC_CHOICE}\n{PRIVATE_CHOICE.replace('[x]', '[*]')}",
+            f"{PUBLIC_CHOICE.replace('[x]', '[*]')}\n{PRIVATE_CHOICE}",
+            f"{PUBLIC_UNCHECKED}\n{PRIVATE_CHOICE.replace('[x]', '[yes]')}",
         )
         for body in bodies:
             with self.subTest(body=body):
@@ -323,8 +326,49 @@ class SlideModeWorkflowTests(unittest.TestCase):
 
                 self.assertNotEqual(result.returncode, 0, result.stderr)
                 log = self.log_text()
-                self.assertIn("Please check exactly one slide-delivery option", log)
+                self.assertIn("exactly one choice is required", log)
+                self.assertIn("mark either public or private with `[x]`", log)
+                self.assertIn("rerun Actions", log)
                 self.assertNotIn("private-slides-fall-2026-01", log)
+
+    def test_retry_recognizes_hand_typed_private_choice_and_invites_student(self) -> None:
+        result = self.run_workflow(
+            EVENT_NAME="workflow_dispatch",
+            COMMENT_PR_NUMBER="",
+            DISPATCH_PR_NUMBER="5",
+            DISPATCH_ACTOR_ID="12053767",
+            PR_JSON=json_pull_request(
+                body=f"{PUBLIC_UNCHECKED}\r\n{PRIVATE_CHOICE.replace('[x]', '[*]')}",
+                state="closed",
+                merged=True,
+            ),
+            REPO_EXISTS="0",
+            MAIN_REF_EXISTS="0",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        log = self.log_text()
+        self.assertIn("repo create stat701/private-slides-fall-2026-01 --private", log)
+        self.assertIn("collaborators/student -f permission=push", log)
+        self.assertIn("--record-id fall-2026-01 --mode private", log)
+        self.assertIn("Private slides enabled", log)
+
+    def test_hand_typed_public_choice_does_not_create_private_repository(self) -> None:
+        result = self.run_workflow(
+            EVENT_NAME="workflow_dispatch",
+            COMMENT_PR_NUMBER="",
+            DISPATCH_PR_NUMBER="5",
+            DISPATCH_ACTOR_ID="12053767",
+            PR_JSON=json_pull_request(
+                body=f"{PUBLIC_CHOICE.replace('[x]', '[*]')}\n{PRIVATE_UNCHECKED}",
+                state="closed",
+                merged=True,
+            ),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("private-slides-fall-2026-01", self.log_text())
+        self.assertIn("Public slides enabled", self.log_text())
 
     def test_non_title_merge_cleanly_skips_slide_mode_configuration(self) -> None:
         result = self.run_workflow(

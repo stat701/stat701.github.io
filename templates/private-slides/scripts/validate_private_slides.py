@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import importlib.util
+import json
 import re
 import subprocess
 import sys
@@ -13,14 +15,26 @@ from pathlib import Path
 from typing import Sequence
 
 
+# Resolve the engine beside this trusted script, never from the submission checkout.
+_ENGINE_SPEC = importlib.util.spec_from_file_location(
+    "private_slide_pdf_engine", Path(__file__).resolve().with_name("validate_slide_pdf.py")
+)
+assert _ENGINE_SPEC is not None and _ENGINE_SPEC.loader is not None
+pdf_validation = importlib.util.module_from_spec(_ENGINE_SPEC)
+_ENGINE_SPEC.loader.exec_module(pdf_validation)
+
+
 RECORD_ID_RE = re.compile(r"\Afall-2026-(?:0[1-9]|1[0-8])\Z")
 PDF_SIGNATURE_RE = re.compile(rb"\A%PDF-(?:1\.[0-7]|2\.0)(?:\r\n|\r|\n|[ %])")
 MAX_PDF_BYTES = 25 * 1024 * 1024
-MAX_PAGES = 200
 
 
 class ValidationError(Exception):
     """A student-facing validation failure."""
+
+
+class _ReportedPdfValidationError(ValidationError):
+    """A PDF tool failure whose detailed report has already been written."""
 
 
 class GitCommandError(Exception):
@@ -39,34 +53,6 @@ class ValidationResult:
     record_id: str
     page_count: int | None
     message: str
-
-
-def _run(
-    command: Sequence[str],
-    *,
-    timeout_seconds: int = 45,
-    text: bool = False,
-) -> bytes | str:
-    try:
-        return subprocess.run(
-            command,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=text,
-            timeout=timeout_seconds,
-        ).stdout
-    except subprocess.TimeoutExpired as error:
-        raise ValidationError(f"Command timed out: {command[0]}") from error
-    except (OSError, subprocess.CalledProcessError) as error:
-        if isinstance(error, subprocess.CalledProcessError):
-            detail = error.stderr
-            if isinstance(detail, bytes):
-                detail = detail.decode("utf-8", errors="replace")
-            detail = detail.strip() or f"exit status {error.returncode}"
-        else:
-            detail = str(error)
-        raise ValidationError(f"{command[0]} failed: {detail}") from error
 
 
 def _run_git(repo: Path, arguments: Sequence[str], *, text: bool = False) -> bytes | str:
@@ -172,69 +158,47 @@ def validate_pdf_envelope(data: bytes) -> None:
         raise ValidationError("The slide file has no PDF end marker near the end.")
 
 
-def _extract_page_count(pdfinfo_output: str) -> int:
-    encrypted = re.search(r"(?im)^Encrypted:\s*yes\b", pdfinfo_output)
-    if encrypted:
-        raise ValidationError("Encrypted PDFs are not accepted.")
-    match = re.search(r"(?im)^Pages:\s*(\d+)\s*$", pdfinfo_output)
-    if match is None:
-        raise ValidationError("Could not determine the PDF page count.")
-    page_count = int(match.group(1))
-    if page_count < 1 or page_count > MAX_PAGES:
-        raise ValidationError(f"The PDF must contain between 1 and {MAX_PAGES} pages.")
-    return page_count
+def validate_pdf_with_tools(
+    pdf_path: Path,
+    *,
+    report_path: Path | None = None,
+    head_sha: str = "0" * 40,
+    submission_path: str | None = None,
+) -> int:
+    with tempfile.TemporaryDirectory(prefix="private-slide-report-") as temporary:
+        destination = report_path or Path(temporary) / "report.json"
+        status = pdf_validation.validate_slide_pdf(
+            pdf_path,
+            report_path=destination,
+            head_sha=head_sha,
+            submission_path=submission_path or pdf_path.name,
+        )
+        report = json.loads(destination.read_text(encoding="utf-8"))
+    if status:
+        raise _ReportedPdfValidationError(
+            report["failure"] or "The PDF checks did not complete."
+        )
+    return int(report["page_count"])
 
 
-def validate_pdf_with_tools(pdf_path: Path) -> int:
-    _run(["qpdf", "--check", str(pdf_path)], timeout_seconds=45, text=True)
-    pdfinfo_output = str(
-        _run(["pdfinfo", str(pdf_path)], timeout_seconds=45, text=True)
+def _write_structural_failure(
+    report_path: Path, *, head_sha: str, record_id: str, failure: str
+) -> None:
+    pdf_validation._write_report(
+        report_path,
+        {
+            "schema_version": 1,
+            "head_sha": head_sha.lower(),
+            "submission_path": f"{record_id}.pdf",
+            "status": "failed",
+            "qpdf_exit_code": None,
+            "qpdf_warnings": [],
+            "failure": failure[:1_000],
+            "producer": None,
+            "page_count": None,
+            "rendered_count": None,
+        },
     )
-    page_count = _extract_page_count(pdfinfo_output)
-
-    javascript = str(_run(["pdfinfo", "-js", str(pdf_path)], timeout_seconds=45, text=True))
-    if javascript.strip():
-        raise ValidationError(
-            "PDFs containing JavaScript are not accepted. Export a standard PDF."
-        )
-
-    embedded_files = str(
-        _run(["pdfdetach", "-list", str(pdf_path)], timeout_seconds=45, text=True)
-    )
-    if embedded_files.strip() != "0 embedded files":
-        raise ValidationError(
-            "PDFs containing embedded files are not accepted. Export slides without "
-            "attachments."
-        )
-
-    with tempfile.TemporaryDirectory(prefix="private-slide-render-") as temporary:
-        prefix = Path(temporary) / "page"
-        _run(
-            [
-                "pdftoppm",
-                "-f",
-                "1",
-                "-l",
-                str(page_count),
-                "-png",
-                "-r",
-                "24",
-                str(pdf_path),
-                str(prefix),
-            ],
-            timeout_seconds=180,
-            text=True,
-        )
-        rendered_count = sum(
-            1
-            for path in Path(temporary).glob("page-*.png")
-            if path.is_file() and path.stat().st_size > 0
-        )
-    if rendered_count != page_count:
-        raise ValidationError(
-            f"Expected {page_count} rendered pages but produced {rendered_count}."
-        )
-    return page_count
 
 
 def validate_private_slides(
@@ -244,7 +208,35 @@ def validate_private_slides(
     record_id: str,
     *,
     check_pdf_tools: bool = True,
+    report_path: Path | None = None,
 ) -> ValidationResult:
+    try:
+        return _validate_private_slides(
+            repo, base, head, record_id,
+            check_pdf_tools=check_pdf_tools,
+            report_path=report_path,
+        )
+    except _ReportedPdfValidationError:
+        raise
+    except (GitCommandError, ValidationError) as error:
+        if report_path is not None:
+            _write_structural_failure(
+                report_path, head_sha=head, record_id=record_id, failure=str(error)
+            )
+        raise
+
+
+def _validate_private_slides(
+    repo: Path | str,
+    base: str,
+    head: str,
+    record_id: str,
+    *,
+    check_pdf_tools: bool,
+    report_path: Path | None,
+) -> ValidationResult:
+    if not check_pdf_tools and report_path is not None:
+        raise ValidationError("A PDF validation report requires all PDF tool checks.")
     repo_path = Path(repo).resolve()
     if not repo_path.is_dir():
         raise GitCommandError(f"Repository directory does not exist: {repo_path}")
@@ -283,7 +275,12 @@ def validate_private_slides(
         with tempfile.TemporaryDirectory(prefix="private-slide-blob-") as temporary:
             pdf_path = Path(temporary) / expected_path
             pdf_path.write_bytes(data)
-            page_count = validate_pdf_with_tools(pdf_path)
+            page_count = validate_pdf_with_tools(
+                pdf_path,
+                report_path=report_path,
+                head_sha=head_commit,
+                submission_path=expected_path,
+            )
 
     rendered = (
         f" and rendered all {page_count} pages"
@@ -305,6 +302,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--head", required=True)
     parser.add_argument("--record-id", required=True)
     parser.add_argument("--github-output")
+    parser.add_argument("--report", type=Path)
     parser.add_argument(
         "--skip-pdf-tools",
         action="store_true",
@@ -319,9 +317,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.head,
             args.record_id,
             check_pdf_tools=not args.skip_pdf_tools,
+            report_path=args.report,
         )
     except (GitCommandError, ValidationError) as error:
-        print(f"::error::{error}", file=sys.stderr)
+        print(f"::error::{pdf_validation._safe_log_text(str(error))}", file=sys.stderr)
         return 1
 
     if args.github_output:

@@ -132,18 +132,20 @@ jobs:
             pr_body="$(jq -r '.body // ""' <<<"$pr_json")"
             public_checked=false
             private_checked=false
+            # Accept the common hand-typed [*] mark as well as GitHub's [x].
+            # Both selected or neither selected must still fail closed.
             grep --quiet --ignore-case --extended-regexp \
-              '^[[:space:]]*-[[:space:]]*\[[xX]\][[:space:]]*I choose \*\*public\*\* slide delivery[:.]' \
+              '^[[:space:]]*-[[:space:]]*\[[xX*]\][[:space:]]*I choose \*\*public\*\* slide delivery[:.]' \
               <<<"$pr_body" && public_checked=true
             grep --quiet --ignore-case --extended-regexp \
-              '^[[:space:]]*-[[:space:]]*\[[xX]\][[:space:]]*I choose \*\*private\*\* slide delivery[:.]' \
+              '^[[:space:]]*-[[:space:]]*\[[xX*]\][[:space:]]*I choose \*\*private\*\* slide delivery[:.]' \
               <<<"$pr_body" && private_checked=true
             if [[ "$public_checked" == true && "$private_checked" == false ]]; then
               mode=public
             elif [[ "$public_checked" == false && "$private_checked" == true ]]; then
               mode=private
             else
-              gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body "Please check exactly one slide-delivery option in the pull-request checklist: public or private."
+              gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body 'Slide delivery setup stopped because exactly one choice is required. Edit this pull request description: mark either public or private with `[x]`, and leave the other as `[ ]`. After correcting a merged pull request, ask the instructor to rerun Actions → Choose slide delivery mode using this pull request number. No private repository or invitation is created until setup succeeds.'
               exit 1
             fi
           fi
