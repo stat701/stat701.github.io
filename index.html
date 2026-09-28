@@ -7,11 +7,11 @@ layout: null
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#001a57">
-    <meta name="description" content="STA 701S is Duke Statistical Science's Ph.D. seminar—a forum for high-quality presentations on interesting statistical ideas and thoughtful discussion across research areas.">
+    <meta name="description" content="STA 701S meets Mondays, 11:45 AM–1:00 PM, in Old Chem 116. Duke Statistical Science's Ph.D. seminar brings statistical ideas and research into conversation.">
 
     <meta property="og:type" content="website">
     <meta property="og:title" content="STA 701S | Duke Statistical Science">
-    <meta property="og:description" content="High-quality presentations on interesting statistical ideas. Ideas in conversation.">
+    <meta property="og:description" content="Mondays · 11:45 AM–1:00 PM · Old Chem 116. Duke Statistical Science's Graduate Research Seminar.">
     <meta property="og:url" content="https://stat701.github.io/">
 
     <title>STA 701S | Duke Statistical Science</title>
@@ -45,6 +45,26 @@ layout: null
     </header>
 
     <main id="main-content" tabindex="-1">
+      <section class="meeting-banner" aria-labelledby="meeting-heading">
+        <div class="meeting-banner__inner">
+          <h2 id="meeting-heading">STA 701S meets here</h2>
+          <dl class="meeting-banner__details">
+            <div>
+              <dt>Day</dt>
+              <dd>Mondays</dd>
+            </div>
+            <div>
+              <dt>Time</dt>
+              <dd>11:45 AM–1:00 PM</dd>
+            </div>
+            <div>
+              <dt>Location</dt>
+              <dd>Old Chem 116</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
       <section class="hero" aria-labelledby="course-title">
         <div class="hero__inner">
           <div class="hero__copy">
@@ -216,6 +236,15 @@ layout: null
             <p>The current speaker calendar is shown below. Two presentations are scheduled for each listed meeting.</p>
             <a class="schedule-guide-link" href="https://github.com/stat701/stat701.github.io/blob/main/CONTRIBUTING.md">Student submission guide <span aria-hidden="true">↗</span></a>
           </div>
+        </div>
+
+        <div class="schedule-meeting-details" role="group" aria-label="Seminar meeting time and location">
+          <p class="schedule-meeting-details__label">All seminar meetings</p>
+          <p class="schedule-meeting-details__facts">
+            <span>Mondays</span>
+            <span>11:45 AM–1:00 PM</span>
+            <span>Old Chem 116</span>
+          </p>
         </div>
 
         {% assign fall_meetings = site.talks | where: "semester", "fall-2026" | group_by_exp: "talk", "talk.date | date: '%Y-%m-%d'" | sort: "name" %}
