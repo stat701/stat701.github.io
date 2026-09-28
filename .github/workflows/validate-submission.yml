@@ -58,6 +58,43 @@ jobs:
           cd trusted
           python -m unittest discover -s tests -v
 
+      - name: Check proposed private PDF template parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Inspect the proposed merge tree as data. An older student branch
+          # still receives current main's infrastructure in this merge tree.
+          python3 -I - <<'PY'
+          import subprocess
+
+          def git(*arguments):
+              return subprocess.check_output(["git", "-C", "submission", *arguments])
+
+          revision = git("rev-parse", "HEAD^{commit}").decode("ascii").strip()
+          for name in ("validate_slide_pdf.py", "report_pdf_validation.py"):
+              blobs = []
+              for path in (f"scripts/{name}", f"templates/private-slides/scripts/{name}"):
+                  entry = git("ls-tree", "-z", revision, "--", path)
+                  metadata, separator, actual_path = entry.rstrip(b"\0").partition(b"\t")
+                  fields = metadata.split()
+                  if (
+                      not separator
+                      or actual_path != path.encode("utf-8")
+                      or len(fields) != 3
+                      or fields[0] not in (b"100644", b"100755")
+                      or fields[1] != b"blob"
+                  ):
+                      raise SystemExit(f"::error::The proposed merge must contain a regular file at {path}.")
+                  blobs.append(git("cat-file", "blob", f"{revision}:{path}"))
+              if blobs[0] != blobs[1]:
+                  raise SystemExit(
+                      "::error::Public and private PDF infrastructure differ. "
+                      "Run python scripts/sync_private_slide_template.py and "
+                      f"commit both copies of {name}."
+                  )
+          print("Proposed public and private PDF infrastructure matches.")
+          PY
+
       - name: Validate the pull-request submission
         id: submission
         env:
