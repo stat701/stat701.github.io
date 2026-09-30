@@ -120,6 +120,11 @@ jobs:
               echo "Merged pull request is not for a title-and-abstract submission; skipping slide-mode configuration."
               exit 0
             fi
+            metadata_status="$(gh api "/repos/$REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[0].status')"
+            if [[ "$metadata_status" != "modified" && "$metadata_status" != "added" ]]; then
+              echo "Merged pull request did not add or update a talk; skipping slide-mode configuration."
+              exit 0
+            fi
           fi
           mode=public
           if [[ "$EVENT_NAME" == "issue_comment" ]]; then
