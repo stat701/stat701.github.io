@@ -77,6 +77,9 @@ class SlideModeWorkflowTests(unittest.TestCase):
                 if args and args[0] == "api":
                     url = next((arg for arg in args if arg.startswith("/repos/")), "")
                     if "/pulls/" in url and url.endswith("/files"):
+                        if "--jq" in args and args[args.index("--jq") + 1] == ".[0].status":
+                            print(os.environ.get("FILE_STATUS", "modified"))
+                            sys.exit(0)
                         for filename in os.environ.get("FILES", "_talks/fall-2026-01.md").splitlines():
                             if filename:
                                 print(filename)
@@ -392,6 +395,36 @@ class SlideModeWorkflowTests(unittest.TestCase):
             result.stdout,
         )
         self.assertNotIn("scripts/submission_registry.py", self.log_text())
+
+    def test_removed_talk_skips_setup_without_slide_delivery_checklist(self) -> None:
+        for event_name in ("pull_request_target", "workflow_dispatch"):
+            with self.subTest(event_name=event_name):
+                self.log.write_text("", encoding="utf-8")
+                result = self.run_workflow(
+                    EVENT_NAME=event_name,
+                    COMMENT_PR_NUMBER="",
+                    CLOSED_PR_NUMBER="5",
+                    CLOSED_MERGED="true",
+                    CLOSED_MERGER_ID="12053767",
+                    CLOSED_MERGER_TYPE="User",
+                    DISPATCH_PR_NUMBER="5",
+                    DISPATCH_ACTOR_ID="12053767",
+                    PR_JSON=json_pull_request(body="", state="closed", merged=True),
+                    FILE_STATUS="removed",
+                )
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(
+                    "Merged pull request did not add or update a talk; skipping slide-mode configuration.",
+                    result.stdout,
+                )
+                log = self.log_text()
+                self.assertNotIn("gh pr comment", log)
+                self.assertNotIn("scripts/submission_registry.py", log)
+                self.assertNotIn("private-slides-fall-2026-01", log)
+                self.assertNotIn("collaborators/", log)
+                self.assertNotIn("scripts/set_slide_mode.py", log)
+                self.assertNotIn("gh pr create", log)
 
     def test_closed_unmerged_pull_request_target_skips_before_fetching_pr(self) -> None:
         result = self.run_workflow(
